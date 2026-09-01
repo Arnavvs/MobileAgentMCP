@@ -21,7 +21,7 @@ from __future__ import annotations
 from mcp.server import MCPServer
 
 from .tools import (device_tools, explore_tools, input_tools, registry_tools,
-                    system_tools, ui_tools)
+                    system_tools, thread_tools, ui_tools)
 from .tools.apps import instagram as ig_tools
 
 mcp = MCPServer(
@@ -38,7 +38,7 @@ mcp = MCPServer(
 )
 
 for mod in (device_tools, ui_tools, input_tools, system_tools,
-            explore_tools, registry_tools, ig_tools):
+            explore_tools, thread_tools, registry_tools, ig_tools):
     mod.register(mcp)
 
 
