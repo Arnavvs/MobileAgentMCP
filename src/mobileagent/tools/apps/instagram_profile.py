@@ -507,8 +507,10 @@ def register_orchestrator(mcp) -> None:
             "Reuses the reels_viewer selectors already in the registry."
         )
     )
-    def ig_collect_reel_details(indices: list, settle_s: float = 2.0,
-                                max_swipes: int = 30,
+    def ig_collect_reel_details(indices: list, poll_s: float = 0.35,
+                                overlay_timeout_s: float = 2.5,
+                                skip_settle_s: float = 0.45,
+                                max_swipes: int = 40,
                                 expect_handle: str = "") -> dict:
         from ...selectors import registry as reg
         t0 = time.time()
@@ -518,6 +520,7 @@ def register_orchestrator(mcp) -> None:
         want = sorted(set(int(i) for i in indices))
         if not want:
             return {"error": "no indices given"}
+        version = dev.app_version(IG_PKG) or ""
 
         els = _dump()
         thumbs = [e for e in els if e.rid == "preview_clip_thumbnail"]
@@ -526,24 +529,42 @@ def register_orchestrator(mcp) -> None:
                              "first so the Reels tab is selected"}
         x, y = thumbs[0].center
         dev.shell(f"input tap {x} {y}")
-        time.sleep(3.5)
+
+        def extract_when_ready() -> dict:
+            """Poll until the engagement overlay renders, then extract.
+
+            Replaces a blind 2s sleep with a wait that ends the instant counts
+            appear - usually well under 1s. Also rides out the known first-reel
+            overlay-missing bug by continuing to poll instead of accepting nulls.
+            """
+            deadline = time.time() + overlay_timeout_s
+            last = {}
+            while time.time() < deadline:
+                els = _dump()
+                f = reg.extract_fields("instagram", version, "reels_viewer", els)
+                fields = f.get("fields", f)
+                if fields.get("like_count") is not None:
+                    return f
+                last = f
+                time.sleep(poll_s)
+            return last            # timed out: return whatever we have
 
         out: list[dict] = []
         pos = 0
         for _ in range(max_swipes + 1):
             if pos in want:
-                els = _dump()
-                f = reg.extract_fields("instagram", dev.app_version(IG_PKG) or "",
-                                       "reels_viewer", els)
+                f = extract_when_ready()
                 f["grid_index"] = pos
                 out.append(f)
             if pos >= max(want):
                 break
+            # Reels between targets are not extracted, so only pause long enough
+            # for the swipe to register - the big saving over a full settle.
             dev.shell("input swipe 540 1700 540 500 250")
-            time.sleep(settle_s)
+            time.sleep(skip_settle_s)
             pos += 1
 
         dev.shell("input keyevent KEYCODE_BACK")
-        time.sleep(1.0)
+        time.sleep(0.8)
         return {"requested": want, "collected": len(out), "reels": out,
                 "seconds": round(time.time() - t0, 2)}
