@@ -193,6 +193,37 @@ def parse_number(raw: str) -> Optional[int]:
         return None
 
 
+def apply_composite(raw: str, patterns: dict[str, str]) -> dict[str, Any]:
+    """Pull sub-fields out of a single composite accessibility label.
+
+    Apps differ in shape and the registry must handle both:
+      * Instagram exposes ONE ANCHOR PER FIELD (clips_author_username, like_count).
+      * Reddit packs a whole post into ONE label on `post_unit`:
+        "From TeenIndia, Posted 11 hours ago, <title>, 2059 upvotes,
+         509 comments, Reposted 0 times, Shared 1863 times, 803 thousand views"
+
+    The raw string is always preserved alongside the parse, so a bad pattern is
+    diagnosable and re-derivable without going back to the device.
+    """
+    out: dict[str, Any] = {"_raw": raw}
+    for name, pat in patterns.items():
+        try:
+            m = re.search(pat, raw)
+        except re.error as e:
+            out[name] = None
+            out.setdefault("_pattern_errors", {})[name] = str(e)
+            continue
+        if not m:
+            out[name] = None
+            continue
+        val = (m.group(1) if m.groups() else m.group(0)).strip()
+        num = parse_number(val)
+        # Keep it a string unless the capture is purely numeric - "11 hours ago"
+        # must not silently become 11.
+        out[name] = num if (num is not None and re.fullmatch(r"[\d,]+", val)) else val
+    return out
+
+
 def extract_fields(app: str, version: str, screen: str,
                    elements) -> dict[str, Any]:
     """Apply the registry's field spec to a parsed element list."""
@@ -211,13 +242,43 @@ def extract_fields(app: str, version: str, screen: str,
             unavailable.append(name)
             out[name] = None
             continue
-        if f.get("type") == "number":
+        if f.get("composite"):
+            out[name] = apply_composite(raw, f["composite"])
+        elif f.get("type") == "number":
             out[name] = {"raw": raw, "value": parse_number(raw)}
         else:
             out[name] = raw
     if unavailable:
         out["_unavailable"] = unavailable
     return out
+
+
+def extract_repeating(app: str, version: str, screen: str, field: str,
+                      elements) -> list[dict[str, Any]]:
+    """Extract EVERY occurrence of a repeating field, not just the first.
+
+    Feeds render several items at once; `first_value` would silently discard all
+    but one. Used for list screens such as the Reddit home feed.
+    """
+    from .. import ui as ui_mod
+
+    base = baseline_for(app, version) or {}
+    spec = base.get("screens", {}).get(screen, {})
+    f = spec.get("fields", {}).get(field)
+    if not f:
+        return []
+    anchor, prefer = f["anchor"], f.get("prefer", "any")
+    rows: list[dict[str, Any]] = []
+    for e in elements:
+        if e.anchor != anchor:
+            continue
+        raw = (e.text if prefer == "text" else
+               e.desc if prefer == "desc" else (e.text or e.desc))
+        if not raw:
+            continue
+        rows.append(apply_composite(raw, f["composite"]) if f.get("composite")
+                    else {"_raw": raw})
+    return rows
 
 
 def record_baseline(app: str, version: str, screen: str, live_ids: list[str],
