@@ -25,6 +25,7 @@ from .tools import (device_tools, explore_tools, input_tools, registry_tools,
 from .tools.apps import instagram as ig_tools
 from .tools.apps import instagram_profile as ig_profile
 from .tools.apps import instagram_comments as ig_comments
+from .tools.apps import reel_capture as ig_capture
 
 mcp = MCPServer(
     name="mobileagent",
@@ -41,7 +42,7 @@ mcp = MCPServer(
 
 for mod in (device_tools, ui_tools, input_tools, system_tools,
             explore_tools, thread_tools, registry_tools, ig_tools,
-            ig_profile, ig_comments):
+            ig_profile, ig_comments, ig_capture):
     mod.register(mcp)
 ig_profile.register_orchestrator(mcp)
 
