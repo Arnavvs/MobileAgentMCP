@@ -23,6 +23,7 @@ from mcp.server import MCPServer
 from .tools import (device_tools, explore_tools, input_tools, registry_tools,
                     system_tools, thread_tools, ui_tools)
 from .tools.apps import instagram as ig_tools
+from .tools.apps import instagram_profile as ig_profile
 
 mcp = MCPServer(
     name="mobileagent",
@@ -38,8 +39,10 @@ mcp = MCPServer(
 )
 
 for mod in (device_tools, ui_tools, input_tools, system_tools,
-            explore_tools, thread_tools, registry_tools, ig_tools):
+            explore_tools, thread_tools, registry_tools, ig_tools,
+            ig_profile):
     mod.register(mcp)
+ig_profile.register_orchestrator(mcp)
 
 
 def main() -> None:
