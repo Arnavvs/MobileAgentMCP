@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "mobileagent": {
+      "command": "python",
+      "args": ["-m", "mobileagent.server"],
+      "env": {
+        "PYTHONPATH": "src"
+      }
+    }
+  }
+}

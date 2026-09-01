@@ -1,0 +1,19 @@
+[project]
+name = "mobileagent-mcp"
+version = "0.1.0"
+description = "MCP server for driving a physical Android device via structured UI"
+requires-python = ">=3.10"
+dependencies = ["mcp[cli]>=2.1.1", "uiautomator2>=3.7.0"]
+
+[project.scripts]
+mobileagent-mcp = "mobileagent.server:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"mobileagent.selectors" = ["*.json"]
