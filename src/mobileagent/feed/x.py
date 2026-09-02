@@ -98,6 +98,37 @@ def _journal(entry: dict) -> None:
 # timelines
 # --------------------------------------------------------------------------
 
+def _tab_band(nodes: list, y_min: int = _TAB_Y_MIN, y_lo: int = 300,
+              y_bottom: int = 420) -> list:
+    """Cells of a horizontal tab strip: fixed-height row near the top.
+
+    The height bound matters - without it a post's "Image" node that happens to
+    start inside the band is read as a tab.
+    """
+    return [n for n in nodes
+            if y_min <= n["bounds"][1] <= y_lo
+            and n["bounds"][3] >= y_bottom
+            and 100 <= (n["bounds"][3] - n["bounds"][1]) <= 200]
+
+
+def _selected_label(band: list) -> Optional[str]:
+    """Which cell in a tab strip is active.
+
+    X marks the active tab on an ANONYMOUS parent cell, never on the labelled
+    node, so this pairs the two by x-overlap. Shared by the Home timeline strip
+    and the search-results strip because both behave identically - and the
+    logic is subtle enough that two copies would drift.
+    """
+    labelled = [n for n in band if n["label"]]
+    for cell in [n for n in band if n["selected"]]:
+        cx1, _, cx2, _ = cell["bounds"]
+        for lab in labelled:
+            lx1, _, lx2, _ = lab["bounds"]
+            if min(cx2, lx2) - max(cx1, lx1) > 0.6 * (lx2 - lx1):
+                return lab["label"]
+    return None
+
+
 def timelines(serial: str = "", nodes: Optional[list] = None) -> dict:
     """Tab strip contents plus which tab is live.
 
@@ -262,37 +293,75 @@ def close_sheet(serial: str = "") -> None:
     time.sleep(1.2)
 
 
-def not_interested(nth: int = 0, apply: bool = False, serial: str = "") -> dict:
-    """Mark the nth visible post 'Not interested in Post'.
+# X words the negative-feedback item differently per surface: "Not interested
+# in Post" on For you, "This post's not helpful" on search results, and nothing
+# at all on a List/Topic tab. Three wordings for one signal, found by walking
+# the device - assume there are more.
+_NEG_LABELS = {
+    "not interested in post",
+    "not interested in this post",
+    "this post's not helpful",
+    "this post isn't helpful",
+}
 
-    Refuses unless the For-you tab is live AND the menu actually offers the
-    item. Both checks matter: on a List/Topic tab the item is absent and the row
-    at that position is `Follow @handle`.
+
+def surface(serial: str = "", nodes: Optional[list] = None) -> dict:
+    """Which ranked surface is on screen: a Home tab, search results, or other.
+
+    Needed because feed controls are surface-dependent and the same tap means
+    different things in each.
+    """
+    if nodes is None:
+        nodes = _nodes(_raw_xml(serial))
+    labels = {n["label"] for n in nodes if n["label"]}
+    t = timelines(serial, nodes=nodes)
+    # `ranked` is the property that actually predicts behaviour. Verified
+    # 2026-09-03 across four surfaces: the negative-feedback item is present
+    # exactly where a ranker exists - For you and search/Top offer it, while
+    # search/Latest and List/Topic tabs (both reverse-chronological) do not.
+    # Following is reverse-chron too, so it is NOT ranked.
+    if t["on_home"]:
+        return {"surface": "home", "timeline": t["active"],
+                "ranked": (t["active"] or "").lower() == "for you"}
+    if {"Top", "Latest", "People"} <= labels:
+        # Search tabs sit slightly lower than Home's (y=307 vs 295), so the
+        # band has to reach further down or the strip is missed entirely.
+        tab = _selected_label(_tab_band(nodes, y_lo=320))
+        return {"surface": "search", "timeline": None, "result_tab": tab,
+                "ranked": (tab or "").lower() == "top"}
+    return {"surface": "other", "timeline": None, "ranked": False}
+
+
+def not_interested(nth: int = 0, apply: bool = False, serial: str = "") -> dict:
+    """Send the nth visible post a negative ranking signal.
 
     Per xai-org/x-algorithm, `not_interested` is one of five named negative
     labels the Phoenix ranker predicts, weighted well above any positive
-    engagement - so this is a real ranking input, not a UI courtesy.
-    """
-    t = timelines(serial)
-    if t["active"] is None:
-        return {"error": "cannot determine the active timeline", "detail": t}
-    if t["active"].lower() != "for you":
-        return {"error": "refusing: 'Not interested' exists only on For you",
-                "active": t["active"],
-                "hint": "switch_timeline('For you') first"}
+    engagement - a real ranking input, not a UI courtesy.
 
+    The gate is the MENU, not the tab. An earlier version required the For-you
+    tab, on the theory that the item existed nowhere else; the 2026-09-03 human
+    trace found it on search results too, worded "This post's not helpful", so
+    the tab gate was refusing a supported signal. Matching on a label set is
+    both safer and broader: if none of the known wordings is present the item
+    genuinely is not offered here (a List/Topic tab), and tapping by position
+    would hit `Follow @handle` - the opposite signal.
+    """
+    surf = surface(serial)
     menu = post_options(nth, serial=serial)
     if "error" in menu:
         return menu
     hit = next((i for i in menu["items"]
-                if i["label"].lower().startswith("not interested")), None)
+                if i["label"].strip().lower() in _NEG_LABELS), None)
     if not hit:
         close_sheet(serial)
-        return {"error": "'Not interested in Post' not in this menu",
-                "labels": menu["labels"],
-                "note": "surface-dependent - see feed-former.md 1.3"}
+        return {"error": "no negative-feedback item in this menu",
+                "surface": surf, "labels": menu["labels"],
+                "note": "expected on For you and search; absent on List/Topic "
+                        "tabs - see feed-former.md 1.3 and 8.3"}
 
-    plan = {"action": "not_interested", "nth": nth, "timeline": t["active"],
+    plan = {"action": "not_interested", "nth": nth,
+            "surface": surf["surface"], "timeline": surf["timeline"],
             "label": hit["label"], "tap": hit["center"]}
     if not apply:
         close_sheet(serial)
@@ -488,4 +557,196 @@ def snapshot(max_tweets: int = 40, max_swipes: int = 20, settle_s: float = 1.3,
     path.write_text(json.dumps(rec, indent=2, ensure_ascii=False),
                     encoding="utf-8")
     rec["path"] = str(path)
+    return rec
+
+
+# --------------------------------------------------------------------------
+# search - the route the human actually used (see feed-former.md 8.2)
+# --------------------------------------------------------------------------
+
+_RESULT_TABS = ("top", "latest", "people", "media", "lists")
+
+
+def search(query: str, tab: str = "", settle: float = 3.5,
+           serial: str = "") -> dict:
+    """Explore -> search box -> type -> submit, optionally switching result tab.
+
+    This is the first half of the only route that measurably moved this feed.
+    `twitter.py` has an `x_search` MCP tool, but it is defined inside a
+    registrar and cannot be called as a function, which is why this lives here
+    rather than being reused.
+
+    Every element is located by LABEL and tapped at its centre, never by its own
+    `clickable` flag - X hangs clickability on anonymous parents, so filtering
+    on it silently finds nothing.
+    """
+    fg = dev.foreground(serial=serial).get("package") or ""
+    if fg != X_PKG:
+        return {"error": "not in X", "foreground": fg, "hint": "ensure_home()"}
+
+    nodes = _nodes(_raw_xml(serial))
+    exp = next((n for n in nodes if n["label"].lower() == "explore"), None)
+    if not exp:
+        home = ensure_home(serial)
+        nodes = _nodes(_raw_xml(serial))
+        exp = next((n for n in nodes if n["label"].lower() == "explore"), None)
+        if not exp:
+            return {"error": "Explore tab not found", "home": home}
+    _tap(*exp["center"], serial=serial, settle=settle)
+
+    nodes = _nodes(_raw_xml(serial))
+    box = next((n for n in nodes if "search" in n["label"].lower()), None)
+    if not box:
+        return {"error": "search box not found on Explore"}
+    _tap(*box["center"], serial=serial, settle=2.0)
+
+    for _ in range(30):          # clear whatever the last search left behind
+        dev.shell("input keyevent KEYCODE_DEL", serial=serial)
+    time.sleep(0.6)
+    safe = query.replace("'", "").replace(" ", "%s")
+    dev.shell("input text '" + safe + "'", serial=serial)
+    time.sleep(1.5)
+    dev.shell("input keyevent KEYCODE_ENTER", serial=serial)
+    time.sleep(settle + 1.0)
+
+    out = {"query": query, "submitted": True}
+    if tab:
+        out["tab"] = switch_result_tab(tab, serial=serial)
+    nodes = _nodes(_raw_xml(serial))
+    out["surface"] = surface(serial, nodes=nodes)
+    out["handles"] = [n["label"] for n in nodes
+                      if n["label"].startswith("@")][:12]
+    return out
+
+
+def switch_result_tab(name: str, serial: str = "", settle: float = 2.5) -> dict:
+    """Switch between Top / Latest / People / Media / Lists on search results.
+
+    Note `Lists` here: search results expose a Lists tab, which is a route to
+    finding curated feeds to follow rather than building one by hand. Unexplored
+    as of 2026-09-03.
+    """
+    want = name.strip().lower()
+    if want not in _RESULT_TABS:
+        return {"error": "unknown result tab", "asked": name,
+                "known": list(_RESULT_TABS)}
+    nodes = _nodes(_raw_xml(serial))
+    # The result-tab strip shares Home's geometry exactly (see timelines()), so
+    # identify it by its own labels rather than by position.
+    labels = {n["label"] for n in nodes if n["label"]}
+    if not {"Top", "Latest", "People"} <= labels:
+        return {"error": "not on a search-results screen", "hint": "search() first"}
+    cell = next((n for n in nodes
+                 if n["label"].strip().lower() == want
+                 and _TAB_Y_MIN <= n["bounds"][1] <= 340), None)
+    if not cell:
+        return {"error": "tab not visible", "asked": name}
+    _tap(*cell["center"], serial=serial, settle=settle)
+    return {"switched_to": cell["label"]}
+
+
+# --------------------------------------------------------------------------
+# engagement - read the warning
+# --------------------------------------------------------------------------
+
+def like(nth: int = 0, apply: bool = False, serial: str = "") -> dict:
+    """Like the nth visible post.
+
+    SCOPE WARNING. `projectContext.txt` and this project's own rules exclude
+    synthetic engagement used to steer a ranker, and `favorite` is a scored
+    action in xai-org/x-algorithm - so an automated like IS a ranking write,
+    not a read. It exists because the human's run used exactly one Like and the
+    tool set should be able to express what they did. It is deliberately NOT
+    called by `consume()`: firing it in a loop would break the project's rule
+    and would also destroy the measurement in feed-former.md 2.1C by injecting
+    the signal you are trying to observe.
+
+    Use it as a person would - singly and deliberately. Every fired call is
+    journalled.
+    """
+    nodes = _nodes(_raw_xml(serial))
+    likes = sorted([n for n in nodes if n["label"].strip().lower() == "like"],
+                   key=lambda n: n["bounds"][1])
+    if nth >= len(likes):
+        return {"error": "not that many like controls visible",
+                "visible": len(likes), "wanted": nth}
+    plan = {"action": "like", "nth": nth, "tap": likes[nth]["center"],
+            "surface": surface(serial, nodes=nodes)["surface"]}
+    if not apply:
+        return {"applied": False, "plan": plan,
+                "note": "engagement write - read the docstring before firing"}
+    _tap(*plan["tap"], serial=serial, settle=1.5)
+    _journal(plan)
+    return {"applied": True, "plan": plan}
+
+
+# --------------------------------------------------------------------------
+# consume - dwell and scroll, the lever that actually moved the feed
+# --------------------------------------------------------------------------
+
+def consume(duration_s: float = 120.0, dwell_min: float = 1.5,
+            dwell_max: float = 6.0, apply: bool = False,
+            out_dir: str = "", serial: str = "") -> dict:
+    """Read a feed the way the human did: scroll, and dwell on what is there.
+
+    The 2026-09-03 trace is why this exists. The account owner moved a For-you
+    feed from 0% to 77% Indian politics in under five minutes without touching
+    one preference control; the method was search plus sustained reading, and
+    `dwell` and `not_dwelled` are both named scored actions in the published
+    ranker.
+
+    Honest about what this is: dwelling on purpose to move a recommender is a
+    ranking write, and sits closer to the no-synthetic-engagement rule than
+    `snapshot()` does. Two things keep it defensible - it performs no action a
+    reader does not (no likes, follows or replies; see `like()`), and every run
+    is journalled with its parameters so a later measurement can attribute or
+    discard it. Do not run it against a timeline you are also measuring: it is
+    the treatment, not the instrument.
+
+    Returns what it read, so a treatment run doubles as a collection run.
+    """
+    import random
+    from ..tools.apps.twitter import assemble_tweets
+
+    surf = surface(serial)
+    plan = {"action": "consume", "duration_s": duration_s,
+            "dwell_s": [dwell_min, dwell_max], "surface": surf}
+    if not apply:
+        return {"applied": False, "plan": plan,
+                "note": "re-run with apply=True; this writes to the ranker"}
+
+    t0 = time.time()
+    seen: dict[str, dict] = {}
+    steps = 0
+    while time.time() - t0 < duration_s:
+        xml = _raw_xml(serial)
+        for tw in assemble_tweets(uix.parse(xml)):
+            key = "%s|%s" % (tw.get("handle"), (tw.get("text") or "")[:70])
+            seen.setdefault(key, tw)
+        # Dwell varies per post: a fixed cadence is neither what a reader does
+        # nor what the ranker records as dwell.
+        time.sleep(random.uniform(dwell_min, dwell_max))
+        dev.shell("input swipe 540 1700 540 800 %d"
+                  % random.randint(240, 420), serial=serial)
+        steps += 1
+        time.sleep(random.uniform(0.4, 1.1))
+
+    tweets = list(seen.values())
+    authors: dict[str, int] = {}
+    for tw in tweets:
+        h = tw.get("handle") or "?"
+        authors[h] = authors.get(h, 0) + 1
+    rec = {"applied": True, "plan": plan, "steps": steps,
+           "elapsed_s": round(time.time() - t0, 1),
+           "distinct_posts": len(tweets), "distinct_authors": len(authors),
+           "ads": sum(1 for t in tweets if t.get("is_ad")),
+           "top_authors": sorted(authors.items(), key=lambda kv: -kv[1])[:10]}
+
+    out = Path(out_dir) if out_dir else JOURNAL.parent
+    out.mkdir(parents=True, exist_ok=True)
+    path = out / ("x-consume-" + time.strftime("%Y%m%d-%H%M%S") + ".json")
+    path.write_text(json.dumps({**rec, "tweets": tweets}, indent=2,
+                               ensure_ascii=False), encoding="utf-8")
+    rec["path"] = str(path)
+    _journal(plan)
     return rec

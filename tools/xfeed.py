@@ -62,7 +62,7 @@ def main() -> int:
     sp = sub.add_parser("menu", help="open a post's overflow and read it")
     sp.add_argument("--nth", type=int, default=0)
 
-    sp = sub.add_parser("not-interested", help="negative signal (For-you only)")
+    sp = sub.add_parser("not-interested", help="negative signal (For you + search results)")
     sp.add_argument("--nth", type=int, default=0)
 
     sp = sub.add_parser("lists", help="open Add/remove from Lists for a post")
@@ -71,12 +71,29 @@ def main() -> int:
 
     sub.add_parser("tabs-screen", help="open the Add tab -> Timelines screen")
 
-    sp = sub.add_parser("search", help="search the Topics/Lists catalogue")
-    sp.add_argument("query")
+    sp = sub.add_parser("topic-search", help="search the Topics/Lists catalogue")
+    sp.add_argument("query", metavar="QUERY")
 
     sp = sub.add_parser("pin", help="pin a Topic/List as a Home tab")
     sp.add_argument("name")
     sp.add_argument("--unpin", action="store_true")
+
+    sub.add_parser("surface", help="which ranked surface is on screen")
+
+    sp = sub.add_parser("search", help="Explore search; the route that works")
+    sp.add_argument("query")
+    sp.add_argument("--tab", default="", help="top|latest|people|media|lists")
+
+    sp = sub.add_parser("result-tab", help="switch search-result tab")
+    sp.add_argument("name")
+
+    sp = sub.add_parser("like", help="like a post (ENGAGEMENT WRITE)")
+    sp.add_argument("--nth", type=int, default=0)
+
+    sp = sub.add_parser("consume", help="scroll+dwell; the measured lever")
+    sp.add_argument("--seconds", type=float, default=120.0, dest="duration_s")
+    sp.add_argument("--dwell-min", type=float, default=1.5, dest="dwell_min")
+    sp.add_argument("--dwell-max", type=float, default=6.0, dest="dwell_max")
 
     sp = sub.add_parser("snapshot", help="sample the live timeline to JSON")
     sp.add_argument("--max", type=int, default=40, dest="max_tweets")
@@ -102,10 +119,22 @@ def main() -> int:
         r = xf.add_to_list(a.nth, a.list_name, apply=a.apply, serial=s)
     elif a.cmd == "tabs-screen":
         r = xf.open_timelines_screen(serial=s)
-    elif a.cmd == "search":
+    elif a.cmd == "topic-search":
         r = xf.search_timelines(a.query, serial=s)
     elif a.cmd == "pin":
         r = xf.pin(a.name, unpin=a.unpin, apply=a.apply, serial=s)
+    elif a.cmd == "surface":
+        r = xf.surface(serial=s)
+    elif a.cmd == "search":
+        r = xf.search(a.query, tab=a.tab, serial=s)
+    elif a.cmd == "result-tab":
+        r = xf.switch_result_tab(a.name, serial=s)
+    elif a.cmd == "like":
+        r = xf.like(a.nth, apply=a.apply, serial=s)
+    elif a.cmd == "consume":
+        r = xf.consume(a.duration_s, a.dwell_min, a.dwell_max,
+                       apply=a.apply, serial=s)
+        r.pop("tweets", None)
     elif a.cmd == "snapshot":
         r = xf.snapshot(a.max_tweets, a.max_swipes, out_dir=a.out_dir,
                         serial=s)

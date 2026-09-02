@@ -56,12 +56,14 @@ def register(mcp) -> None:
 
     @mcp.tool(
         description=(
-            "Mark the nth visible post 'Not interested in Post' - a real "
-            "negative ranking signal (one of five negative labels the X ranker "
-            "predicts). Refuses unless the For-you tab is active AND the menu "
-            "actually offers the item; on a List/Topic tab that row is "
-            "'Follow @handle' instead. Plans by default; pass apply=true to "
-            "fire. Applied changes are journalled to artifacts/feed/."
+            "Send the nth visible post a negative ranking signal - one of five "
+            "negative labels the X ranker predicts, weighted well above any "
+            "positive engagement. X words it per surface: 'Not interested in "
+            "Post' on For you, \"This post's not helpful\" on search results, "
+            "and it is absent on List/Topic tabs. Matches the label set rather "
+            "than the tab, and refuses when none is present - tapping by "
+            "position there would hit 'Follow @handle', the opposite signal. "
+            "Plans by default; apply=true fires. Journalled to artifacts/feed/."
         )
     )
     def x_feed_not_interested(nth: int = 0, apply: bool = False) -> dict:
@@ -112,5 +114,65 @@ def register(mcp) -> None:
     )
     def x_feed_snapshot(max_tweets: int = 40, max_swipes: int = 20) -> dict:
         r = xf.snapshot(max_tweets, max_swipes)
+        r.pop("tweets", None)
+        return r
+
+    @mcp.tool(
+        description=(
+            "Report which ranked surface is on screen: a Home timeline tab, "
+            "search results, or neither. Feed controls are surface-dependent, "
+            "so the same tap means different things in each."
+        )
+    )
+    def x_feed_surface() -> dict:
+        return xf.surface()
+
+    @mcp.tool(
+        description=(
+            "Search X: Explore -> search box -> submit, optionally switching "
+            "result tab (top|latest|people|media|lists). This is the first half "
+            "of the only route measured to move this feed - see feed-former.md "
+            "8.2. Read-only."
+        )
+    )
+    def x_feed_search(query: str, tab: str = "") -> dict:
+        return xf.search(query, tab=tab)
+
+    @mcp.tool(
+        description=(
+            "Switch between Top / Latest / People / Media / Lists on a search-"
+            "results screen. Note Lists: search exposes curated feeds to follow, "
+            "an alternative to building one by hand."
+        )
+    )
+    def x_feed_result_tab(name: str) -> dict:
+        return xf.switch_result_tab(name)
+
+    @mcp.tool(
+        description=(
+            "Like the nth visible post. ENGAGEMENT WRITE: 'favorite' is a scored "
+            "action in X's ranker, so this steers the feed rather than reading "
+            "it. Use singly and deliberately, never in a loop - a loop breaks "
+            "the project's no-synthetic-engagement rule and corrupts any "
+            "measurement running alongside. Plans by default; apply=true fires."
+        )
+    )
+    def x_feed_like(nth: int = 0, apply: bool = False) -> dict:
+        return xf.like(nth, apply=apply)
+
+    @mcp.tool(
+        description=(
+            "Read a feed by scrolling and dwelling, the way a person does. This "
+            "is the lever measured to work: a human moved For you from 0% to "
+            "77% Indian politics in five minutes by search plus sustained "
+            "reading, and 'dwell' is a scored action in X's ranker. It is a "
+            "TREATMENT, not an instrument - do not run it against a timeline "
+            "you are also measuring. Performs no likes, follows or replies. "
+            "Returns what it read, and journals every run. apply=true to fire."
+        )
+    )
+    def x_feed_consume(duration_s: float = 120.0, dwell_min: float = 1.5,
+                       dwell_max: float = 6.0, apply: bool = False) -> dict:
+        r = xf.consume(duration_s, dwell_min, dwell_max, apply=apply)
         r.pop("tweets", None)
         return r

@@ -537,3 +537,60 @@ with the tab gate relaxed to "any ranked surface".
   all during long scrolls; on USB it should fire far more often.
 - Gesture capture itself was clean: 145 swipes / 100 taps / 1 long-press, no
   dropped events, no reader errors.
+
+---
+
+## 9. The rule behind the menu variants (2026-09-03, verified)
+
+§1.3 and §8.3 recorded the negative-feedback item appearing under different
+wordings on different screens, and treated that as a quirk to enumerate. It is
+not a quirk. Tested across four surfaces on the device:
+
+| Surface | Pipeline | Negative item |
+|---|---|---|
+| Home / **For you** | ML-ranked | `Not interested in Post` |
+| Search / **Top** | ML-ranked | `This post's not helpful` |
+| Search / **Latest** | reverse-chron | **absent** |
+| Home / **List or Topic** tab | reverse-chron | **absent** |
+
+**The control exists exactly where a ranker exists.** Two wordings, one meaning,
+and its presence is predicted by whether the surface is scored rather than by
+which screen you are on. Following is reverse-chronological too, so it should
+also lack the item - untested, and the obvious next check.
+
+This is now encoded rather than described. `feed/x.py::surface()` reports
+`ranked` for the live surface, resolving the active search-result tab through
+the same anonymous-`selected`-cell trick the Home strip needs (extracted to
+`_selected_label`, since two copies of that logic would drift). `not_interested`
+gates on the MENU rather than on `ranked`, which is the safer order: the menu is
+authoritative, and a surface we have mis-classified still cannot cause a wrong
+tap.
+
+### 9.1 New tools, from what the human actually did
+
+The 2026-09-03 trace showed the working route was search-and-dwell, none of
+which had a tool. Added to `feed/x.py`, all with front-ends in `tools/xfeed.py`
+and `tools/apps/x_feed.py`:
+
+| Function | What it is |
+|---|---|
+| `surface()` | which ranked surface is live, and whether it is ranked |
+| `search(query, tab)` | Explore -> box -> submit -> optional result tab |
+| `switch_result_tab()` | Top / Latest / People / Media / **Lists** |
+| `like(nth)` | engagement write - see the warning below |
+| `consume(duration, dwell)` | scroll-and-dwell, the measured lever |
+
+Two of these need their scope stated plainly rather than buried:
+
+- **`like()` is a ranking write.** `favorite` is a scored action in
+  xai-org/x-algorithm. It exists because the human's run contained exactly one
+  Like and the tool set should express what they did, but it is deliberately not
+  called by `consume()`: a like loop is precisely the synthetic engagement this
+  project rules out, and it would also destroy the §2.1C measurement by
+  injecting the signal under observation.
+- **`consume()` is a treatment, not an instrument.** Dwelling on purpose to move
+  a recommender sits closer to that same line than `snapshot()` does. What keeps
+  it defensible is that it performs no action a reader does not - no likes,
+  follows or replies - and journals every run with its parameters, so a later
+  measurement can attribute or discard it. Never run it against a timeline you
+  are also measuring.
