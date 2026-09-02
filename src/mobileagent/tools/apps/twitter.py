@@ -58,7 +58,16 @@ _AGE = re.compile(r"^[·.\-]\s*(\d+[smhdwy]|\w+\s+\d+)$")
 _NOT_BODY = re.compile(
     r"^(profile images? for|liked by|reposted by|followed by|"
     r"trending in|promoted by|who to follow|new to x|"
-    r"see new posts|show more replies|show this thread)", re.I)
+    r"see new posts|show more replies|show this thread|"
+    # account and translation badges. These sit between the header and the
+    # body, so without them a snapshot records "Parody account" as the text of
+    # every parody post and "Translated from X" for every translated one -
+    # which quietly poisons any topic analysis run over the capture.
+    r"translated from|show original|automated by|subscribe to|"
+    # the badge family is open-ended - parody, commentary, fan, business and
+    # more all render as "<word> account" on its own row. Match the shape, not
+    # a list of words, or the next variant silently becomes tweet text again.
+    r"\w+ account$)", re.I)
 _NUM = re.compile(r"^([\d,]+(?:\.\d+)?)\s*([KMB])?$", re.I)
 _URL = re.compile(r"\b((?:https?://)?[\w.-]+\.[a-z]{2,}(?:/[^\s]*)?)", re.I)
 
