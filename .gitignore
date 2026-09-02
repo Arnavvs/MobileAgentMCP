@@ -5,3 +5,6 @@ artifacts/
 *.mp4
 *.pcm
 *.png
+pipeline/data.db
+pipeline/data.db-wal
+pipeline/data.db-shm
