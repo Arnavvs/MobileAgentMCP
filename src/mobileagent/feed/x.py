@@ -98,15 +98,21 @@ def _journal(entry: dict) -> None:
 # timelines
 # --------------------------------------------------------------------------
 
-def timelines(serial: str = "") -> dict:
+def timelines(serial: str = "", nodes: Optional[list] = None) -> dict:
     """Tab strip contents plus which tab is live.
+
+    `nodes` lets a caller that has already dumped the screen reuse it. A dump
+    costs several hundred ms, and the trace recorder captures a screen after
+    every settled gesture - making it dump twice per capture would double the
+    latency of the one thing that has to keep up with a human.
 
     The active tab is resolved from the anonymous `selected` cell, matched to a
     label by x-overlap. Returns `active: None` rather than guessing when no cell
     reports selected - mid-animation dumps do that, and a wrong answer here
     silently mis-targets every mutation downstream.
     """
-    nodes = _nodes(_raw_xml(serial))
+    if nodes is None:
+        nodes = _nodes(_raw_xml(serial))
     # Tab cells are a fixed-height row (~144px on this device). Without the
     # height bound a post's "Image" node that happens to start inside the band
     # is read as a timeline tab, and `switch_timeline` then reports the feed's
