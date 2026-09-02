@@ -48,6 +48,7 @@ for mod in (device_tools, ui_tools, input_tools, system_tools,
     mod.register(mcp)
 ig_profile.register_orchestrator(mcp)
 ig_capture.register_full(mcp)
+ig_profile.register_about(mcp)
 x_tools.register_nav(mcp)
 x_tools.register_timelines(mcp)
 ig_web.register_session_import(mcp)

@@ -568,3 +568,82 @@ def register_orchestrator(mcp) -> None:
         time.sleep(0.8)
         return {"requested": want, "collected": len(out), "reels": out,
                 "seconds": round(time.time() - t0, 2)}
+
+
+def register_about(mcp) -> None:
+
+    # Menu rows inside the "About this reel" sheet. NONE of these may ever be
+    # tapped: Interested / Not Interested write feed preferences, Report files a
+    # report, Save bookmarks the post. A blind tap here previously set
+    # "We'll suggest more posts like this for 30 days" - an unintended write.
+    _NEVER_TAP = {"interested", "not interested", "report", "save",
+                  "playback", "why you're seeing this post", "ask meta ai"}
+
+    @mcp.tool(
+        description=(
+            "Read Instagram's own AI-generated 'About this reel' description - "
+            "Meta's content understanding of the reel, a strong metadata signal. "
+            "Opens the More sheet, waits for the text to generate, reads it, and "
+            "closes with BACK.\n"
+            "STRICTLY READ-ONLY: it never taps any sheet row. The sheet contains "
+            "Interested / Not Interested / Report / Save, all of which write to "
+            "your account."
+        )
+    )
+    def ig_about_reel(wait_s: float = 8.0, poll_s: float = 0.7,
+                      close_after: bool = True) -> dict:
+        t0 = time.time()
+        els = _dump()
+        more = [e for e in els if e.rid == "clips_ufi_more_button_component"]
+        if not more:
+            return {"error": "More button not found - is a reel open?",
+                    "foreground": dev.foreground()}
+        x, y = more[0].center
+        dev.shell(f"input tap {x} {y}")
+
+        # Poll until the sheet exists AND the AI text has been generated: the
+        # description arrives a beat after the sheet renders, so dumping once
+        # returns the header with no body.
+        desc = None
+        options: list[str] = []
+        deadline = time.time() + wait_s
+        opened = False
+        while time.time() < deadline:
+            time.sleep(poll_s)
+            els = _dump()
+            vals = uix.values_by_anchor(els)
+            sheet = vals.get("recycler_view", []) or []
+            if any("about this reel" in v.lower() for v in sheet):
+                opened = True
+                body = [v for v in sheet
+                        if "about this reel" not in v.lower() and len(v) > 40]
+                if body:
+                    desc = max(body, key=len)
+                    options = [v for v in vals.get("control_option_text", []) if v]
+                    break
+        if not opened:
+            return {"error": "About sheet did not open",
+                    "hint": "the More control's touch target is unreliable; "
+                            "retry, or open it by hand",
+                    "seconds": round(time.time() - t0, 2)}
+
+        # Re-read options even if the description timed out.
+        if not options:
+            options = [v for v in uix.values_by_anchor(_dump())
+                       .get("control_option_text", []) if v]
+
+        if close_after:
+            dev.shell("input keyevent KEYCODE_BACK")
+            time.sleep(0.8)
+
+        return {
+            "about_this_reel": desc,
+            "generated": bool(desc),
+            "menu_options": options,
+            "seconds": round(time.time() - t0, 2),
+            "source": "meta_ai_generated",
+            "safety": "read-only; no sheet row was tapped",
+            "note": None if desc else
+                    "sheet opened but the AI text had not generated in time - "
+                    "raise wait_s",
+        }
