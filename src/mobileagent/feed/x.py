@@ -107,8 +107,24 @@ def timelines(serial: str = "") -> dict:
     silently mis-targets every mutation downstream.
     """
     nodes = _nodes(_raw_xml(serial))
+    # Tab cells are a fixed-height row (~144px on this device). Without the
+    # height bound a post's "Image" node that happens to start inside the band
+    # is read as a timeline tab, and `switch_timeline` then reports the feed's
+    # media as an available timeline.
     band = [n for n in nodes
-            if _TAB_Y_MIN <= n["bounds"][1] <= 300 and n["bounds"][3] >= 420]
+            if _TAB_Y_MIN <= n["bounds"][1] <= 300
+            and n["bounds"][3] >= 420
+            and 100 <= (n["bounds"][3] - n["bounds"][1]) <= 200]
+    # X's SEARCH RESULTS screen reuses this band with identical geometry -
+    # Top / Latest / People / Media / Lists cells, same y-range, same 144px
+    # height - so band position alone cannot identify the Home strip, and
+    # without this check `timelines()` cheerfully reports "Latest" as a
+    # timeline and `switch_timeline` taps into the wrong screen. "Add tab" is
+    # the Home-only landmark.
+    if not any(n["label"].lower() == "add tab" for n in nodes):
+        return {"active": None, "tabs": [], "on_home": False,
+                "note": "tab strip not found (no 'Add tab') - not on Home"}
+
     labelled, selected_cells = [], []
     for n in band:
         lab = n["label"]
@@ -163,10 +179,21 @@ def ensure_home(serial: str = "", settle: float = 2.5) -> dict:
             return {"on_home": True, "active": t["active"]}
 
         nodes = _nodes(_raw_xml(serial))
-        btn = next((n for n in nodes if n["clickable"]
-                    and n["label"].lower() in ("scroll to top", "home")), None)
+        # Deliberately NOT filtered on n["clickable"]: X hangs clickability on
+        # an anonymous parent, so the bottom-nav "Home" label reports False and
+        # a clickable-filtered search silently finds nothing. Combined with the
+        # no-BACK rule that left this stuck on the search screen forever.
+        btn = next((n for n in nodes
+                    if n["label"].lower() in ("scroll to top", "home")), None)
         if btn:
             _tap(*btn["center"], serial=serial, settle=settle)
+        elif any(n["label"] in ("Back", "Filters") for n in nodes):
+            # A sub-screen inside X (search results, a profile, settings). BACK
+            # is the only way out. The original sin was not BACK itself but
+            # BACK with no check afterwards - so press it, then let the next
+            # iteration's foreground test relaunch X if we went too far.
+            dev.shell("input keyevent KEYCODE_BACK", serial=serial)
+            time.sleep(1.8)
         else:
             # Scrolled deep enough that X has hidden BOTH the tab strip and the
             # bottom nav, so there is no control to press - scroll back up

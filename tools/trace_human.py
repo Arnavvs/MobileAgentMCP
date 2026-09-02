@@ -47,19 +47,37 @@ def pick_serial(explicit: str = "") -> str:
     return (usb or devs or [""])[0]
 
 
-def touch_ranges(serial: str) -> tuple[int, int]:
-    """Max raw X/Y the touchscreen reports, for scaling to screen pixels."""
+def touch_device(serial: str) -> tuple[str, int, int]:
+    """Find the touchscreen and its raw X/Y maxima, for scaling to pixels.
+
+    `getevent -p` prints ABS axes as HEX CODES, not names: 0035 is
+    ABS_MT_POSITION_X, 0036 is ABS_MT_POSITION_Y. An earlier version matched on
+    the names, found nothing, and silently fell back to 4095 - on this panel the
+    real maxima are 8639 x 19199, so every coordinate would have been wrong by
+    about a factor of two while looking entirely plausible. Raise instead.
+    """
     out = subprocess.run(["adb", "-s", serial, "shell", "getevent", "-p"],
                          capture_output=True, text=True, timeout=20).stdout
-    mx = my = 0
-    for name, attr in ((_ABS_X, "mx"), (_ABS_Y, "my")):
-        m = re.search(name + r".*?max\s+(\d+)", out, re.S)
+    best: tuple[str, int, int] | None = None
+    dev_path = ""
+    axes: dict[str, int] = {}
+    for line in out.splitlines():
+        m = re.match(r"add device \d+: (\S+)", line)
         if m:
-            if attr == "mx":
-                mx = int(m.group(1))
-            else:
-                my = int(m.group(1))
-    return mx or 4095, my or 4095
+            if dev_path and "0035" in axes and "0036" in axes:
+                best = (dev_path, axes["0035"], axes["0036"])
+            dev_path, axes = m.group(1), {}
+            continue
+        m = re.match(r"\s*(003[56])\s*:.*max\s+(\d+)", line)
+        if m:
+            axes[m.group(1)] = int(m.group(2))
+    if dev_path and "0035" in axes and "0036" in axes and not best:
+        best = (dev_path, axes["0035"], axes["0036"])
+    if not best or best[1] <= 0 or best[2] <= 0:
+        raise SystemExit(json.dumps({
+            "error": "no touchscreen with ABS_MT_POSITION_X/Y (0035/0036)",
+            "hint": "run: adb shell getevent -p, and check the panel's axes"}))
+    return best
 
 
 def screen_size(serial: str) -> tuple[int, int]:
@@ -89,7 +107,7 @@ def main() -> int:
     if not s:
         print(json.dumps({"error": "no adb device attached"}))
         return 2
-    rx, ry = touch_ranges(s)
+    dev_path, rx, ry = touch_device(s)
     sw, sh = screen_size(s)
 
     outdir = Path(a.out)
@@ -97,18 +115,20 @@ def main() -> int:
     path = outdir / ("trace-%s.jsonl" % time.strftime("%Y%m%d-%H%M%S"))
     fh = path.open("w", encoding="utf-8")
     fh.write(json.dumps({"kind": "meta", "label": a.label, "serial": s,
-                         "screen": [sw, sh], "touch_max": [rx, ry],
+                         "screen": [sw, sh], "touch_max": [rx, ry], "input_device": dev_path,
                          "started": time.strftime("%Y-%m-%dT%H:%M:%S")}) + "\n")
+    fh.flush()   # so an interrupted run still leaves a readable header
 
     print("recording %ss to %s - drive the phone by hand now" % (a.seconds, path),
           file=sys.stderr)
-    proc = subprocess.Popen(["adb", "-s", s, "shell", "getevent", "-lt"],
+    proc = subprocess.Popen(["adb", "-s", s, "shell", "getevent", "-lt", dev_path],
                             stdout=subprocess.PIPE, text=True, bufsize=1)
 
     deadline = time.time() + a.seconds
     cur: dict = {}
     last_up = None
     n = 0
+    fg_cache, fg_at = foreground(s), time.time()
     try:
         while time.time() < deadline:
             line = proc.stdout.readline()
@@ -125,7 +145,14 @@ def main() -> int:
                 cur["y"] = int(val, 16) * sh // ry
             elif code == _BTN:
                 if val.upper() == "DOWN":
-                    cur = {"down": ts, "fg": foreground(s),
+                    # Throttled: `dumpsys window` costs a few hundred ms, and
+                    # calling it on every touch-down stalls the reader while a
+                    # human is scrolling, so events queue and timings drift.
+                    # Screen context changes far slower than gestures do.
+                    now = time.time()
+                    if now - fg_at > 2.0:
+                        fg_cache, fg_at = foreground(s), now
+                    cur = {"down": ts, "fg": fg_cache,
                            "x": cur.get("x"), "y": cur.get("y")}
                     cur["x0"], cur["y0"] = cur.get("x"), cur.get("y")
                 elif val.upper() == "UP" and cur.get("down"):
