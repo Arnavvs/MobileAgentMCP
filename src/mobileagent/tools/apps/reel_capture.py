@@ -127,3 +127,69 @@ def register(mcp) -> None:
             except dev.DeviceError as e:
                 pulled.append({"name": nm, "error": str(e)})
         return {"pulled": len(pulled), "dest": dest, "files": pulled}
+
+
+def register_full(mcp) -> None:
+
+    @mcp.tool(
+        description=(
+            "Record the CURRENT reel in full: cut a new segment, then dwell "
+            "until the reel loops back to the start (detected by the scrubber "
+            "playback position wrapping) rather than for a fixed guess. Falls "
+            "back to fallback_s when the scrubber is unavailable, and never "
+            "exceeds max_s. Call once per reel, then swipe and call again."
+        )
+    )
+    def ig_capture_reel_full(name: str, max_s: float = 90.0,
+                             fallback_s: float = 32.0,
+                             poll_s: float = 0.45,
+                             min_s: float = 3.0) -> dict:
+        from ... import ui as uix
+        from ...selectors import registry as reg
+
+        def scrubber_ms():
+            """Current playback position, or None when not exposed."""
+            els = uix.parse(dev.u2().dump_hierarchy())
+            v = uix.first_value(els, "scrubber", prefer="text")
+            try:
+                return float(v) if v is not None else None
+            except ValueError:
+                return None
+
+        safe = "".join(c for c in name if c.isalnum() or c in "_-")[:40]
+        dev.shell(f"am broadcast -a dev.reelcap.CUT --es name {safe}")
+        t0 = time.time()
+
+        peak = 0.0
+        wrapped = False
+        samples = 0
+        seen_scrubber = False
+        while time.time() - t0 < max_s:
+            pos = scrubber_ms()
+            if pos is not None:
+                seen_scrubber = True
+                samples += 1
+                # A DROP in position means the reel restarted: one full
+                # play-through is now in the segment.
+                if pos + 250 < peak and (time.time() - t0) > min_s:
+                    wrapped = True
+                    break
+                peak = max(peak, pos)
+            elif not seen_scrubber and (time.time() - t0) > fallback_s:
+                # scrubber never appeared (it is only ~29% available); fall back
+                # to a duration long enough for a typical reel.
+                break
+            time.sleep(poll_s)
+
+        return {
+            "segment": safe,
+            "recorded_s": round(time.time() - t0, 2),
+            "reel_length_ms": int(peak) if peak else None,
+            "stop_reason": ("looped" if wrapped else
+                            "scrubber_unavailable_fallback" if not seen_scrubber
+                            else "max_s"),
+            "scrubber_samples": samples,
+            "note": ("full play-through captured" if wrapped else
+                     "scrubber not exposed for this reel; duration is a "
+                     "fallback estimate and may clip a long reel"),
+        }

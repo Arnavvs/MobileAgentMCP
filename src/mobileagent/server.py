@@ -45,6 +45,7 @@ for mod in (device_tools, ui_tools, input_tools, system_tools,
             ig_profile, ig_comments, ig_capture):
     mod.register(mcp)
 ig_profile.register_orchestrator(mcp)
+ig_capture.register_full(mcp)
 
 
 def main() -> None:
