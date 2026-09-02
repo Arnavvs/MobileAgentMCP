@@ -32,6 +32,7 @@ from mobileagent.tools.apps import instagram_profile as ig_profile  # noqa: E402
 from mobileagent.tools.apps import instagram_web as ig_web  # noqa: E402
 from mobileagent.tools.apps import reel_capture as ig_capture  # noqa: E402
 from mobileagent.tools.apps import twitter as x_tools  # noqa: E402
+from mobileagent.tools.apps import x_feed as x_feed_tools  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -53,6 +54,7 @@ GROUPS = [
     ("Instagram - web/loader", [ig_web.register, ig_web.register_session_import]),
     ("X / Twitter",           [x_tools.register, x_tools.register_nav,
                                x_tools.register_timelines]),
+    ("X / Twitter - feed control", [x_feed_tools.register]),
 ]
 
 
