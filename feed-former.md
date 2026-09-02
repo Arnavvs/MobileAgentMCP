@@ -441,3 +441,99 @@ the tooling now enforces rather than a thing to remember.
 The third is the useful shape: a fixture query on the **Top** tab returns the
 match conversation with metrics attached, where the same query on **Latest**
 returned reply fragments. For sampling a live event, prefer Top.
+
+---
+
+## 8. The human trace, 2026-09-03: "make the feed serve Indian politics"
+
+4.8 minutes, 246 gestures, 44 screen captures, recorded with
+`tools/trace_human.py` while the account's owner did the task by hand.
+Trace: `artifacts/feed/traces/trace-20260903-030809.jsonl`.
+
+### 8.1 The result
+
+Measured with `feed_snapshot` on **For you**, before and 3.5 hours after:
+
+| | before (23:44) | after (03:19) |
+|---|---|---|
+| India/politics share | **0 %** (0/22) | **77 %** (17/22) |
+| Ad share | 18.2 % | 4.5 % |
+| Distinct authors | 20 | 21 |
+| Repeat rate | 0.091 | 0.045 |
+| Top authors | @lilitorresgr, @donnaturner_x, @liuxrrs | @INCIndia, @Amockx2022, @CJP_for_India |
+
+**Author overlap between the two samples: zero.** Not one of the 20 accounts in
+the baseline reappeared in the 21 of the follow-up. The ad share also fell by a
+factor of four.
+
+Caveats, stated plainly: n=22 per sample, one run, no control arm. A For-you
+timeline churns on its own, so this cannot separate the intervention from
+ordinary drift on its own evidence. But a 0 %-to-77 % topic swing with total
+author turnover is far outside what drift plausibly produces, and it is exactly
+the direction the treatment aimed at. The §2.1C protocol - reset, baseline,
+treat, re-measure - is what would make this a claim rather than an observation.
+
+### 8.2 What the human actually did - and did not do
+
+The route was **not** the one this document has been designing for. Checked
+across every gesture in the session:
+
+| Control | Used? |
+|---|---|
+| Not interested / This post's not helpful | **no** |
+| Add tab → Timelines, pin a Topic | **no** |
+| Add/remove from Lists, create a List | **no** |
+| Mute / Block / Follow | **no** |
+| Muted words, Settings of any kind | **no** |
+
+Zero explicit feed controls. What they did instead:
+
+1. **Explore → search `Narendra Modi`** (one tap on the suggestion, 13 s in).
+2. **Read**, at length. 111 upward swipes, median gap 0.57 s between gestures,
+   14 pauses longer than 3 s - those pauses are dwell on individual posts.
+3. Browsed the search-result tabs (`Top`, `Media`, `Lists`) - note X exposes a
+   **Lists tab inside search results**, an unexplored route to finding curated
+   feeds.
+4. **Opened `Post options` three times and closed the sheet six times** without
+   selecting anything. They went looking for a control and backed out.
+5. **One `Like`.** That is the sum of explicit engagement.
+
+The conclusion is uncomfortable for §2 and worth stating: on X, a human's
+working method for changing a feed is **search plus dwell**, not the preference
+surface. Which matches the published ranker - `dwell`, `not_dwelled`,
+`favorite` and `profile_click` are all named scored actions in
+`ranking_scorer.rs`, and searching is itself a documented interest signal. The
+supported controls are the *auditable* lever; consumption is the *effective*
+one. A feed-changer tool that only offers the control surface automates the
+half the human did not use.
+
+### 8.3 A fourth post-options variant
+
+§1.3 recorded two variants. The trace caught a third surface with a third
+wording - the **search-results** screen:
+
+```
+This post's not helpful | Follow @… | Add/remove from Lists | Mute @… |
+Block @… | Report post | Request Community Note | View Hidden Replies
+```
+
+So the negative-feedback item is present on search results but **relabelled**.
+`feed/x.py::not_interested` matches `startswith("not interested")` and gates on
+the For-you tab, so it correctly refuses here - but it also means there is a
+supported negative signal on a surface the tool cannot currently use. Matching
+should become a set: `{"not interested in post", "this post's not helpful"}`,
+with the tab gate relaxed to "any ranked surface".
+
+### 8.4 Instrumentation lessons
+
+- **Wireless is too slow to pair gestures with screens.** Screen captures cost
+  a median of **3.3 s** (max 8.8 s) over TCP, consuming **186 s of the 292 s
+  session**. The consequence is measurable: only **45 % of taps resolved to a
+  control**, because the cached screen was several actions stale by the time
+  the tap arrived. USB is ~12.5x faster (research.md) and is the difference
+  between a route log and a guess log. Reseat the cable before the next run.
+- **59 tweet observations from 44 captures** is thin for 4.8 minutes of
+  scrolling. The `--max-gap` interval capture is what rescued any content at
+  all during long scrolls; on USB it should fire far more often.
+- Gesture capture itself was clean: 145 swipes / 100 taps / 1 long-press, no
+  dropped events, no reader errors.
