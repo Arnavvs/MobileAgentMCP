@@ -154,10 +154,20 @@ def main() -> int:
                 continue
             ts, _dev, _typ, code, val = m.groups()
             ts = float(ts)
+            # Latch the START point on the first coordinate to arrive after a
+            # DOWN, not at DOWN itself: this panel emits BTN_TOUCH DOWN BEFORE
+            # the first ABS_MT_POSITION, so reading the position at DOWN yields
+            # whatever the previous gesture left - and since `cur` is cleared at
+            # UP, that is always None. Every swipe then measured zero distance
+            # and was misclassified as a tap.
             if code == _ABS_X:
                 cur["x"] = int(val, 16) * sw // rx
+                if cur.get("down") and cur.get("x0") is None:
+                    cur["x0"] = cur["x"]
             elif code == _ABS_Y:
                 cur["y"] = int(val, 16) * sh // ry
+                if cur.get("down") and cur.get("y0") is None:
+                    cur["y0"] = cur["y"]
             elif code == _BTN:
                 if val.upper() == "DOWN":
                     # Throttled: `dumpsys window` costs a few hundred ms, and
@@ -168,8 +178,8 @@ def main() -> int:
                     if now - fg_at > 2.0:
                         fg_cache, fg_at = foreground(s), now
                     cur = {"down": ts, "fg": fg_cache,
-                           "x": cur.get("x"), "y": cur.get("y")}
-                    cur["x0"], cur["y0"] = cur.get("x"), cur.get("y")
+                           "x": None, "y": None,
+                           "x0": None, "y0": None}
                 elif val.upper() == "UP" and cur.get("down"):
                     dur = ts - cur["down"]
                     x0, y0 = cur.get("x0"), cur.get("y0")
