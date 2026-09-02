@@ -8,3 +8,5 @@ artifacts/
 pipeline/data.db
 pipeline/data.db-wal
 pipeline/data.db-shm
+pipeline/sessions/
+artifacts/web_media/

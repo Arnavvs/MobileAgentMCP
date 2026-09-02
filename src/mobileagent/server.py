@@ -27,6 +27,7 @@ from .tools.apps import instagram_profile as ig_profile
 from .tools.apps import instagram_comments as ig_comments
 from .tools.apps import reel_capture as ig_capture
 from .tools.apps import twitter as x_tools
+from .tools.apps import instagram_web as ig_web
 
 mcp = MCPServer(
     name="mobileagent",
@@ -43,12 +44,13 @@ mcp = MCPServer(
 
 for mod in (device_tools, ui_tools, input_tools, system_tools,
             explore_tools, thread_tools, registry_tools, ig_tools,
-            ig_profile, ig_comments, ig_capture, x_tools):
+            ig_profile, ig_comments, ig_capture, x_tools, ig_web):
     mod.register(mcp)
 ig_profile.register_orchestrator(mcp)
 ig_capture.register_full(mcp)
 x_tools.register_nav(mcp)
 x_tools.register_timelines(mcp)
+ig_web.register_session_import(mcp)
 
 
 def main() -> None:
