@@ -384,3 +384,165 @@ def register_nav(mcp) -> None:
                 "error": "neither 'Scroll to top' nor Home tab was found",
                 "hint": "scroll up slightly - both only appear after a small "
                         "upward scroll"}
+
+
+# The timeline tab strip sits just under the top bar. Bounded by y so the
+# bottom nav ("Home"/"Explore") and the top icons are not mistaken for tabs.
+_TAB_Y_MIN, _TAB_Y_MAX = 280, 430
+_TAB_SKIP = {"add", "scroll to top", "show navigation drawer",
+             "find people to follow", "post"}
+
+
+
+def _ensure_home(settle_s: float = 2.0) -> bool:
+    """Return to the Home timeline before touching the tab strip.
+
+    The tab strip exists ONLY on Home. Two failure modes were hit here:
+      * a previous step leaves the app on a tweet detail, where every timeline
+        lookup fails with "not found" - a wrong-screen error, not a missing tab;
+      * blind BACK presses walk out of X entirely and land in Instagram, which
+        also has a "Home" tab, so the guard must anchor on the PACKAGE.
+
+    X also restores its last screen on launch, so a plain relaunch can reopen a
+    tweet detail. Force-stop first: it is the only way to guarantee Home.
+    """
+    def on_home() -> bool:
+        return any(
+            _TAB_Y_MIN <= e.center[1] <= _TAB_Y_MAX
+            and (e.text or e.desc or "").strip().lower() in ("for you", "following")
+            for e in _dump()
+        )
+
+    if dev.foreground().get("package") == X_PKG and on_home():
+        return True
+
+    # bottom-nav Home first (cheap, keeps app state)
+    if dev.foreground().get("package") == X_PKG:
+        home = [e for e in _dump()
+                if ((e.desc or "") + (e.text or "")).strip().lower()
+                in ("home", "home tab") and e.center[1] > 2000]
+        if home:
+            x, y = home[0].center
+            dev.shell(f"input tap {x} {y}")
+            time.sleep(settle_s)
+            if on_home():
+                return True
+
+    # guaranteed path: cold start
+    dev.shell(f"am force-stop {X_PKG}")
+    time.sleep(1.0)
+    dev.shell(f"monkey -p {X_PKG} -c android.intent.category.LAUNCHER 1")
+    time.sleep(settle_s + 5.0)
+    return on_home()
+
+
+def register_timelines(mcp) -> None:
+
+    @mcp.tool(
+        description=(
+            "List the timeline tabs currently available on X - 'For you', "
+            "'Following', and any custom timelines/Lists the account has pinned. "
+            "Use before x_switch_timeline to see what exists."
+        )
+    )
+    def x_list_timelines() -> dict:
+        els = _dump()
+        tabs, seen = [], set()
+        for e in els:
+            lab = (e.text or e.desc or "").strip()
+            if not lab or len(lab) > 28:
+                continue
+            cy = e.center[1]
+            if not (_TAB_Y_MIN <= cy <= _TAB_Y_MAX):
+                continue
+            low = lab.lower()
+            if low in _TAB_SKIP or low in seen:
+                continue
+            seen.add(low)
+            tabs.append({"name": lab, "x": e.center[0], "y": cy,
+                         "selected": e.selected})
+        tabs.sort(key=lambda t: t["x"])
+        return {"count": len(tabs), "timelines": tabs,
+                "note": "custom timelines/Lists appear here alongside "
+                        "'For you' and 'Following'"}
+
+    @mcp.tool(
+        description=(
+            "Switch to a named timeline tab on X (e.g. 'Following', or a custom "
+            "timeline such as 'Soccer'). Matches case-insensitively on the tab "
+            "label. Follow with x_collect_timeline to scrape whatever is active."
+        )
+    )
+    def x_switch_timeline(name: str, settle_s: float = 2.5) -> dict:
+        want = name.strip().lower()
+        if not _ensure_home():
+            return {"error": "could not reach the Home timeline",
+                    "foreground": dev.foreground(),
+                    "hint": "the tab strip only exists on Home"}
+        els = _dump()
+        for e in els:
+            lab = (e.text or e.desc or "").strip()
+            cy = e.center[1]
+            if lab.lower() == want and _TAB_Y_MIN <= cy <= _TAB_Y_MAX:
+                x, y = e.center
+                dev.shell(f"input tap {x} {y}")
+                time.sleep(settle_s)
+                return {"switched_to": lab, "at": [x, y]}
+        avail = []
+        for e in els:
+            lab = (e.text or e.desc or "").strip()
+            if lab and _TAB_Y_MIN <= e.center[1] <= _TAB_Y_MAX \
+                    and lab.lower() not in _TAB_SKIP:
+                avail.append(lab)
+        return {"error": f"timeline {name!r} not found",
+                "available": sorted(set(avail)),
+                "hint": "the tab strip scrolls horizontally; swipe left/right "
+                        "on it to reveal more timelines"}
+
+    @mcp.tool(
+        description=(
+            "Scrape several X timelines in one pass: switch to each named "
+            "timeline, collect tweets, and return them grouped by timeline. "
+            "Returns to the top of each before collecting so runs are "
+            "comparable."
+        )
+    )
+    def x_collect_multi(names: list, max_tweets: int = 15,
+                        max_swipes: int = 12) -> dict:
+        out: dict[str, Any] = {}
+        t0 = time.time()
+        _ensure_home()
+        for nm in names:
+            sw = x_switch_timeline(nm)
+            if sw.get("error"):
+                out[nm] = {"error": sw["error"], "available": sw.get("available")}
+                continue
+            # start each timeline from the top so samples are comparable
+            for e in _dump():
+                lab = ((e.desc or "") + (e.text or "")).strip().lower()
+                if lab.startswith("scroll to top"):
+                    x, y = e.center
+                    dev.shell(f"input tap {x} {y}")
+                    time.sleep(1.2)
+                    break
+            merged: dict[str, dict] = {}
+            order: list[str] = []
+            barren = 0
+            for _ in range(max_swipes + 1):
+                fresh = 0
+                for t in assemble_tweets(_dump()):
+                    if t.get("is_ad"):
+                        continue
+                    key = f"{t.get('handle')}|{(t.get('text') or '')[:70]}"
+                    if key not in merged:
+                        merged[key] = t
+                        order.append(key)
+                        fresh += 1
+                barren = 0 if fresh else barren + 1
+                if len(merged) >= max_tweets or barren >= 2:
+                    break
+                dev.shell("input swipe 540 1700 540 800 300")
+                time.sleep(1.3)
+            out[nm] = {"collected": len(order),
+                       "tweets": [merged[k] for k in order][:max_tweets]}
+        return {"timelines": out, "seconds": round(time.time() - t0, 2)}

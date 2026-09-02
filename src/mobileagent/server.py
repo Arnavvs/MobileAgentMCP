@@ -48,6 +48,7 @@ for mod in (device_tools, ui_tools, input_tools, system_tools,
 ig_profile.register_orchestrator(mcp)
 ig_capture.register_full(mcp)
 x_tools.register_nav(mcp)
+x_tools.register_timelines(mcp)
 
 
 def main() -> None:
