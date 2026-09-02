@@ -34,7 +34,15 @@ from pathlib import Path
 _ABS_X = "ABS_MT_POSITION_X"
 _ABS_Y = "ABS_MT_POSITION_Y"
 _BTN = "BTN_TOUCH"
-_LINE = re.compile(r"^\[\s*([\d.]+)\]\s+(\S+):\s+(\S+)\s+(\S+)\s+(\S+)")
+# `getevent -lt` prints FIVE fields when watching every device:
+#     [   12345.678] /dev/input/event2: EV_ABS ABS_MT_POSITION_X 00000abc
+# but only FOUR when a device path is given - the device column is dropped:
+#     [   12345.678] EV_ABS ABS_MT_POSITION_X 00000abc
+# The first version of this regex required the device column, so passing the
+# path (done to cut noise) silently matched nothing and every run reported zero
+# gestures. Accept both shapes.
+_LINE = re.compile(
+    r"^\[\s*([\d.]+)\]\s+(?:(\S+):\s+)?(\S+)\s+(\S+)\s+(\S+)\s*$")
 
 
 def pick_serial(explicit: str = "") -> str:
@@ -129,12 +137,19 @@ def main() -> int:
     last_up = None
     n = 0
     fg_cache, fg_at = foreground(s), time.time()
+    raw_seen = 0
+    raw_tail: list[str] = []
     try:
         while time.time() < deadline:
             line = proc.stdout.readline()
             if not line:
                 break
-            m = _LINE.match(line.strip())
+            stripped = line.strip()
+            if stripped:
+                raw_seen += 1
+                if len(raw_tail) < 8:
+                    raw_tail.append(stripped)
+            m = _LINE.match(stripped)
             if not m:
                 continue
             ts, _dev, _typ, code, val = m.groups()
@@ -179,8 +194,20 @@ def main() -> int:
         proc.terminate()
         fh.close()
 
-    print(json.dumps({"trace": str(path), "gestures": n, "label": a.label},
-                     indent=2))
+    result = {"trace": str(path), "gestures": n, "label": a.label,
+              "raw_lines_seen": raw_seen}
+    if not n:
+        # Distinguish the two failure modes: an empty stream means
+        # nothing was touched or the device is unreadable; lines
+        # without gestures means the parser disagrees with this
+        # build's output format, and the sample says how.
+        result["diagnosis"] = ("no events reached us - was the screen "
+                               "touched, and is the phone unlocked?"
+                               if raw_seen == 0 else
+                               "events arrived but did not parse - "
+                               "paste raw_sample")
+        result["raw_sample"] = raw_tail
+    print(json.dumps(result, indent=2))
     return 0
 
 
