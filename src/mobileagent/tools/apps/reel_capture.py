@@ -15,6 +15,20 @@ Flow:
     ig_capture_stop()                  -> finalize last, tear down
     ig_capture_pull()                  -> copy the MP4s to the host
 
+TRANSPORT - measured head to head on the same 62.6 MB of segments, both
+transports connected simultaneously:
+
+    wireless (192.168.1.5:5555)   2.87 MB/s
+    USB      (device serial)     36.00 MB/s      12.5x faster
+
+    per 14-reel profile (292 MB):  wireless 101.6s  vs  USB 8.1s
+    per 100 profiles   (28.5 GB):  wireless 169 min vs  USB 13.5 min
+
+Segments already STAGE on phone storage and are only pulled at the end, so
+recording is never blocked by transfer. Do the final bulk pull over USB: it
+turns transport from a third of the run budget into a rounding error. Pass the
+USB serial to ig_capture_pull rather than the wireless endpoint.
+
 KNOWN TUNING ISSUE: a PAUSED reel produces a near-static VirtualDisplay, so the
 content-driven encoder emits few frames and the video track ends up much shorter
 than the audio (observed 3-4s video vs 6.4s audio). Before dwelling on a reel,
