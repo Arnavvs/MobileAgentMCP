@@ -85,15 +85,17 @@ def follow_visible(reader: rd.Reader, want: int = 2, topic: str = "football",
 
 def work_topic(keyword: str, seconds: float = 90.0, likes: int = 6,
                follows: int = 2, topic: str = "football",
-               apply: bool = False, serial: str = "") -> dict:
+               apply: bool = False, serial: str = "", query: str = "") -> dict:
     """Search one keyword and engage with the results.
 
     Opens nothing it has not read: a post is only liked when the reader says it
     matches `topic`, so an off-topic result in a topic search does not get a
     positive signal by accident.
     """
+    query = query or topic
     reader = rd.Reader(serial)
-    out = {"keyword": keyword, "applied": apply}
+    out = {"keyword": keyword, "applied": apply,
+           "scorer": "embedding" if rd.relevance_available() else "regex"}
     out["search"] = {k: v for k, v in
                      xf.search(keyword, tab="top", serial=serial).items()
                      if k != "handles"}
@@ -106,7 +108,13 @@ def work_topic(keyword: str, seconds: float = 90.0, likes: int = 6,
         posts = reader.posts()
         for p in posts:
             seen.setdefault((p["handle"], (p["text"] or "")[:40]), p)
-        on_topic = posts and topic in (posts[0].get("topics") or [])
+        # Judge by MEANING and pick the best post on screen, not merely the top
+        # one. The regex could not tell "nuclear arsenals" from football, and
+        # only ever considered posts[0] - so a relevant post sitting second was
+        # scrolled past. `best_post` falls back to the regex if the phone is not
+        # serving, so this degrades rather than breaking.
+        idx = rd.best_post(posts, query)
+        on_topic = idx is not None
 
         if on_topic and liked < likes:
             # OPEN the post rather than scrolling past it. Scrolling past a
@@ -117,7 +125,7 @@ def work_topic(keyword: str, seconds: float = 90.0, likes: int = 6,
             if apply:
                 r = xf.engage_post(0, like_it=True, reply_scrolls=2,
                                    apply=True, serial=serial,
-                                   expect=posts[0].get("text") or "")
+                                   expect=posts[idx].get("text") or "")
                 if r.get("open", {}).get("opened"):
                     opened += 1
                     if r.get("like", {}).get("applied"):
@@ -145,13 +153,14 @@ def work_topic(keyword: str, seconds: float = 90.0, likes: int = 6,
 
 def feed_pass(seconds: float = 60.0, topic: str = "football",
               avoid: str = "politics", apply: bool = False,
-              serial: str = "", max_opens: int = 3) -> dict:
+              serial: str = "", max_opens: int = 3, query: str = "") -> dict:
     """Work the main feed: linger on `topic`, scroll straight past `avoid`.
 
     The asymmetry is the whole point. Dwell is a positive signal and a fast
     scroll past is the absence of one, so a feed pass teaches the ranker with
     nothing but timing - no likes required.
     """
+    query = query or topic
     reader = rd.Reader(serial)
     xf.ensure_home(serial)
     xf.switch_timeline("For you", serial=serial)
@@ -166,15 +175,15 @@ def feed_pass(seconds: float = 60.0, topic: str = "football",
         posts = reader.posts()
         for p in posts:
             seen.setdefault((p["handle"], (p["text"] or "")[:40]), p)
-        tops = (posts[0].get("topics") or []) if posts else []
-        if topic in tops:
+        idx = rd.best_post(posts, query)
+        if idx is not None:
             # Same rule on the main feed: a relevant post that appears here is
             # worth opening, not just lingering on. This is the signal that
             # tells the ranker its guess landed.
             if apply and opened < max_opens:
                 r = xf.engage_post(0, like_it=True, reply_scrolls=1,
                                    apply=True, serial=serial,
-                                   expect=posts[0].get("text") or "")
+                                   expect=posts[idx].get("text") or "")
                 if r.get("open", {}).get("opened"):
                     opened += 1
             else:
@@ -182,13 +191,14 @@ def feed_pass(seconds: float = 60.0, topic: str = "football",
             dwelt += 1
             _swipe(serial)
         else:
-            if avoid in tops:
+            if posts and avoid in (posts[0].get("topics") or []):
                 skipped += 1
             time.sleep(random.uniform(0.15, 0.35))
             _swipe(serial, fast=True)
         time.sleep(0.3)
 
     return {"applied": apply, "dwelt_on_topic": dwelt,
+            "scorer": "embedding" if rd.relevance_available() else "regex",
             "opened": opened, "scrolled_past": skipped,
             "read": rd.summarise(list(seen.values())),
             "reader": reader.stats(),
@@ -198,7 +208,7 @@ def feed_pass(seconds: float = 60.0, topic: str = "football",
 def run(keywords: list, topic: str = "football", avoid: str = "politics",
         topic_seconds: float = 90.0, feed_seconds: float = 45.0,
         likes: int = 6, follows: int = 2, apply: bool = False,
-        serial: str = "") -> dict:
+        serial: str = "", query: str = "") -> dict:
     """Full campaign: for each keyword, engage the topic then work the feed."""
     t0 = time.time()
     result = {"applied": apply, "keywords": keywords, "topic": topic,
@@ -209,9 +219,9 @@ def run(keywords: list, topic: str = "football", avoid: str = "politics",
     for kw in keywords:
         round_ = {"keyword": kw}
         round_["topic_work"] = work_topic(kw, topic_seconds, likes, follows,
-                                          topic, apply, serial)
+                                          topic, apply, serial, query=query)
         round_["feed_pass"] = feed_pass(feed_seconds, topic, avoid, apply,
-                                        serial)
+                                        serial, query=query)
         result["rounds"].append(round_)
     result["elapsed_s"] = round(time.time() - t0, 1)
     return result
