@@ -64,16 +64,21 @@ def ensure_reels(serial: str = "", settle: float = 5.0) -> dict:
         dev.shell("monkey -p %s -c android.intent.category.LAUNCHER 1" % IG_PKG,
                   serial=serial)
         time.sleep(settle + 3.0)
+    # Ask the tab bar, not the content. A reel in the HOME feed carries the same
+    # More button as one in the Reels tab, so "there is a More button" is not
+    # the question - "which tab is selected" is, and the tab bar answers it.
+    def on_clips(ns: list) -> bool:
+        return any(n["rid"] == "clips_tab" and n["selected"] for n in ns)
+
     nodes = _nodes(_raw_xml(serial))
-    if any(n["rid"] == _MORE_RID for n in nodes):
+    if on_clips(nodes):
         return {"on_reels": True}
     tab = next((n for n in nodes if n["rid"] == "clips_tab"), None)
     if not tab:
         return {"on_reels": False, "error": "Reels tab not found",
                 "foreground": dev.foreground(serial=serial)}
     _tap(*tab["center"], serial=serial, settle=settle)
-    return {"on_reels": any(n["rid"] == _MORE_RID
-                            for n in _nodes(_raw_xml(serial)))}
+    return {"on_reels": on_clips(_nodes(_raw_xml(serial)))}
 
 
 # Reels a pass must scroll straight past without opening anything. An ad's
@@ -107,6 +112,34 @@ def is_ad(serial: str = "", nodes: Optional[list] = None) -> dict:
     return {"is_ad": bool(hits), "markers": hits[:4]}
 
 
+# Affordances that sit inside the caption box and are not the caption. A long
+# caption collapses behind "See more", and a reader that takes the first text
+# node in the box records the word "See more" as what the creator wrote.
+_NOT_TEXT = {"see more", "more", "less", "see less", "translate"}
+
+# Labels that share the audio strip but are not audio.
+_BADGES = {"ai content", "ai info", "paid partnership", "sponsored"}
+
+
+def _inside(nodes: list, rid: str, skip_rids: tuple = ()) -> Optional[str]:
+    """The longest real text inside the container with `rid`, if any."""
+    box = next((n for n in nodes if n["rid"] == rid), None)
+    if not box:
+        return None
+    x0, y0, x1, y1 = box["bounds"]
+    hits = []
+    for n in nodes:
+        lab = (n["label"] or "").strip()
+        if n is box or not lab or n["rid"] in skip_rids:
+            continue
+        if lab.lower() in _NOT_TEXT or lab.lower().startswith("profile picture of"):
+            continue
+        b = n["bounds"]
+        if b[0] >= x0 and b[1] >= y0 and b[2] <= x1 and b[3] <= y1:
+            hits.append(lab)
+    return max(hits, key=len) if hits else None
+
+
 def reel_info(serial: str = "", nodes: Optional[list] = None) -> dict:
     """Author and engagement for the reel on screen, from its labels."""
     if nodes is None:
@@ -121,28 +154,33 @@ def reel_info(serial: str = "", nodes: Optional[list] = None) -> dict:
         digits = "".join(c for c in s if c.isdigit())
         return int(digits) if digits else None
 
-    # The caption and the "X liked this reel" line carry no resource-id, so they
-    # are found by where they sit relative to the username, which does. The
-    # caption rid this used to read (`clips_caption_component`) does not exist
-    # on this surface, so `caption` was always None and nobody noticed.
-    author_node = next((n for n in nodes
-                        if n["rid"] == "clips_author_username"), None)
-    caption = proof = None
-    if author_node:
-        ay = author_node["center"][1]
-        for n in nodes:
-            lab = (n["label"] or "").strip()
-            if not lab or n["rid"]:
-                continue
-            y = n["center"][1]
-            if "liked this reel" in lab.lower():
-                proof = lab
-            elif caption is None and ay < y <= ay + 400:
-                caption = lab
+    # The caption and the audio credit carry no resource-id of their own, but
+    # each sits inside a container that has one, so containment names them
+    # exactly. Proximity does not: the audio row is 56px below the username and
+    # the caption 136px below it, so "the first text under the author" is the
+    # AUDIO every time - which is what an earlier version of this recorded as
+    # the caption, on every reel, plausibly enough that the field read as real.
+    caption = _inside(nodes, "clips_caption_component")
+    audio = _inside(nodes, "clips_author_info_component",
+                    skip_rids=("clips_author_username", "clips_author_profile_pic",
+                               "inline_follow_button"))
+    # That same strip rotates between the track credit and Instagram's own
+    # badges, so a read can land on "AI content" instead of the music. It is a
+    # real fact about the reel and worth keeping - it is just not the audio, and
+    # writing it into an `audio` field would be the same mistake one field over.
+    badge = None
+    if audio and audio.strip().lower() in _BADGES:
+        badge, audio = audio.strip(), None
+    proof = next((n["label"] for n in nodes
+                  if "liked this reel" in (n["label"] or "").lower()), None)
 
     return {
         "author": by_rid.get("clips_author_username"),
+        # Truncated by the viewer, ellipsis and all - this is the collapsed
+        # caption as shown, not the full text, which needs a tap to expand.
         "caption": caption,
+        "audio": audio,
+        "badge": badge,
         "social_proof": proof,
         "likes": num("like_count"),
         "comments": num("comment_count"),
@@ -233,10 +271,22 @@ def open_more(serial: str = "", wait_s: float = 15.0, poll_s: float = 0.4,
 
 
 def close_sheet(serial: str = "", settle: float = 1.2) -> dict:
+    """BACK out of the More sheet - but only if one is actually open.
+
+    BACK is not a no-op on this surface: with no sheet up it leaves the Reels
+    tab for Home, and Home looks enough like Reels from the outside that a pass
+    will happily keep walking it. One unconditional BACK sent a 20-reel
+    collection down the home feed, where it recorded 9 "Suggested for you"
+    interstitials as ads, no descriptions and no links, and reported it as a
+    thin night on Reels.
+    """
+    if not any(n["rid"] == _OPTION_RID for n in _nodes(_raw_xml(serial))):
+        return {"closed": True, "was_open": False}
     dev.shell("input keyevent KEYCODE_BACK", serial=serial)
     time.sleep(settle)
     return {"closed": not any(n["rid"] == _OPTION_RID
-                              for n in _nodes(_raw_xml(serial)))}
+                              for n in _nodes(_raw_xml(serial))),
+            "was_open": True}
 
 
 def signal(kind: str = "not interested", apply: bool = False,

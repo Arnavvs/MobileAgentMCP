@@ -130,6 +130,8 @@ def collect(n: int = 20, out_dir: str = "", serial: str = "",
                 "profile": ("https://instagram.com/%s" % single)
                            if single else None,
                 "caption": info.get("caption"),
+                "audio": info.get("audio"),
+                "badge": info.get("badge"),
                 "social_proof": info.get("social_proof"),
                 "likes": info.get("likes"), "comments": info.get("comments"),
                 "reposts": info.get("reposts"), "saves": info.get("saves"),
@@ -159,7 +161,7 @@ def collect(n: int = 20, out_dir: str = "", serial: str = "",
         scoring = "no queries given"
     elif not described:
         scoring = "nothing to score"
-    elif not rd.relevance_available():
+    elif not rd.relevance_available(serial=serial):
         scoring = ("scorer unreachable at %s - is it running in Termux, and is "
                    "`adb forward tcp:8765 tcp:8765` set up?" % rd.RELEVANCE_URL)
     else:
