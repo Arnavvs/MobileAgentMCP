@@ -189,11 +189,17 @@ def summarise(posts: list[dict]) -> dict:
 
 RELEVANCE_URL = os.environ.get("RELEVANCE_URL", "http://127.0.0.1:8765")
 
-# True topical matches above sat at 0.196-0.469 and clear non-matches at
-# -0.09..0.09, so the gap is wide. 0.12 keeps the weak-but-real matches
-# (a football post scoring 0.092 for "bollywood" stays out) without demanding
-# the very high scores only exact-topic posts reach.
-RELEVANCE_THRESHOLD = 0.12
+# Calibrated on live posts, not invented. Clear matches land at 0.19-0.47 and
+# clear non-matches at -0.09..0.08, so the gap is wide - but the boundary is
+# softer than that suggests: short or list-like posts score low even when they
+# are on topic ("Biggest Loss-Making Films of 2026" scored 0.118, "Directors &
+# their Highest Grossers" 0.018), because mean pooling rewards longer,
+# keyword-dense text.
+#
+# So prefer RANKING to thresholding wherever a caller can. Ordering was right in
+# every live sample even where the cut-off was not; picking the best k posts on
+# screen is more robust than asking whether one clears a bar.
+RELEVANCE_THRESHOLD = 0.10
 
 _relevance_up: Optional[bool] = None
 
@@ -224,6 +230,23 @@ def relevance(query: str, texts: list, timeout: float = 8.0) -> Optional[list]:
             return json.loads(r.read()).get("scores")
     except Exception:
         return None
+
+
+def best_post(posts: list, query: str) -> Optional[int]:
+    """Index of the most relevant post on screen, or None.
+
+    The ranking form of `score_posts`, and the one to prefer: it asks which post
+    is most on-topic rather than whether any clears a threshold, which is the
+    judgement that survives short posts and odd phrasing.
+    """
+    if not posts:
+        return None
+    meta = score_posts(posts, query)
+    if meta["backend"] != "embedding":
+        hits = [i for i, p in enumerate(posts) if p.get("relevant")]
+        return hits[0] if hits else None
+    best = max(range(len(posts)), key=lambda i: posts[i].get("relevance") or -9)
+    return best if (posts[best].get("relevance") or -9) > 0 else None
 
 
 def score_posts(posts: list, query: str,

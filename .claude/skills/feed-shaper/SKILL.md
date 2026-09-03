@@ -76,10 +76,56 @@ python tools/xfeed.py read --scrolls 8
 ```
 
 `Reader.posts()` returns handle, text, age, ad flag and metrics per visible
-post. `read.tag()` adds crude regex topics - **treat it as a pre-filter, not
-judgement**. It has already mislabelled `@INCIndia` as untagged and flagged
-Basecamp as politics because `mp\b` matched "Basecamp". Read the text yourself
-before acting on a classification.
+post. `read.tag()` adds crude regex topics - a pre-filter, never judgement. It
+called Basecamp politics (`mp\b` inside "Basecamp") and "nuclear arsenals"
+football.
+
+## Relevance, on the phone
+
+`phone/relevance_server.py` scores posts by MEANING, in Termux on the device:
+Model2Vec potion-base-8M static embeddings, 256-dim, no transformer - a
+vocabulary lookup and a mean. Loads in ~46 ms, scores a screenful in ~1 ms
+(~106 ms including the adb round trip).
+
+Start it on the phone, then bridge it:
+
+```powershell
+.\tmx.ps1 -File .\phone\start_relevance.sh
+```
+
+```powershell
+adb -s HIDMFQ8X894DIVLZ forward tcp:8765 tcp:8765
+```
+
+```python
+from mobileagent.feed import read as rd
+rd.relevance_available()                                  # False -> regex fallback
+rd.best_post(posts, "bollywood film celebrity gossip")    # prefer this
+rd.score_posts(posts, "bollywood film celebrity gossip")
+```
+
+It fixes exactly what the regex could not - measured on live posts:
+
+| text | football | bollywood | politics |
+|---|---|---|---|
+| Nuclear-armed states ramped up arsenals | 0.038 | -0.092 | **0.150** |
+| ... makers of Basecamp and HEY | 0.005 | -0.035 | -0.004 |
+| Arsenal beat Chelsea 2-0 | **0.291** | 0.092 | -0.003 |
+| Toxic advance booking record for Yash | -0.039 | **0.196** | -0.008 |
+| Rahul Gandhi on vote chori in Lok Sabha | -0.047 | 0.092 | **0.469** |
+
+Three things it took measurement to get right:
+
+- **Score the TEXT only.** Gluing the handle on cost "Toxic advance booking
+  record for Yash" more than half its score (0.196 -> 0.072): handles tokenise
+  into subword noise and mean pooling cannot down-weight it.
+- **Normalise hashtags.** "#ShahidKapoor" is one unknown word that shatters into
+  meaningless pieces. Splitting camel case took that post from 0.097 to 0.303 -
+  the difference between ignored and top-ranked. URLs and @mentions go too.
+- **Prefer `best_post` to a threshold.** Ordering was correct in every live
+  sample; the cut-off was not. Short or list-like posts score low even when on
+  topic ("Directors & their Highest Grossers" scored 0.018), because mean
+  pooling rewards longer, keyword-dense text.
 
 ## Hard-won rules
 
