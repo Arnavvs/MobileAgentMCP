@@ -48,6 +48,8 @@ _TAB_SKIP = {"add tab", "scroll to top", "show navigation drawer",
 # chrome, so tapping them hits the chrome instead of the post.
 _CONTENT_TOP, _CONTENT_BOTTOM = 470, 2150
 
+_HANDLE_RE = re.compile(r"^@[A-Za-z0-9_]{1,15}$")
+
 _BOUNDS = re.compile(r"\[(-?\d+),(-?\d+)\]\[(-?\d+),(-?\d+)\]")
 
 JOURNAL = Path(__file__).resolve().parents[3] / "artifacts" / "feed" / "journal.jsonl"
@@ -873,3 +875,203 @@ def engage(duration_s: float = 120.0, like_every: int = 2,
     rec["path"] = str(path)
     _journal({**plan, "likes_fired": len(liked)})
     return rec
+
+
+# --------------------------------------------------------------------------
+# the following list
+# --------------------------------------------------------------------------
+
+def open_following(serial: str = "", settle: float = 3.0) -> dict:
+    """Navigation drawer -> Following. Where the follow graph is editable."""
+    ensure_home(serial)
+    nodes = _nodes(_raw_xml(serial))
+    drawer = next((n for n in nodes
+                   if "navigation drawer" in n["label"].lower()), None)
+    if not drawer:
+        return {"error": "nav drawer not found"}
+    _tap(*drawer["center"], serial=serial, settle=2.5)
+
+    nodes = _nodes(_raw_xml(serial))
+    link = next((n for n in nodes if n["label"] == "Following"), None)
+    if not link:
+        return {"error": "Following link not in drawer",
+                "labels": [n["label"] for n in nodes if n["label"]][:20]}
+    _tap(*link["center"], serial=serial, settle=settle)
+    return {"opened": True}
+
+
+def following_list(max_scrolls: int = 14, serial: str = "") -> dict:
+    """Every account this profile follows: handle, name, bio, and its button.
+
+    Rows are read by grouping around the `@handle` node - the same boundary
+    trick `assemble_tweets` uses for timelines, because this screen has no
+    per-row resource-id either. The BIO is the point: classifying an account
+    from its handle alone is guesswork, and the bio is what a person would read
+    before deciding to unfollow.
+    """
+    rows: dict[str, dict] = {}
+    order: list[str] = []
+    barren = 0
+    for _ in range(max_scrolls + 1):
+        nodes = sorted(_nodes(_raw_xml(serial)), key=lambda n: (n["bounds"][1],
+                                                                n["bounds"][0]))
+        labelled = [n for n in nodes if n["label"]]
+        fresh = 0
+        for i, n in enumerate(labelled):
+            # A real handle is @ + up to 15 word chars and nothing else. Without
+            # this a BIO that merely mentions another account ("@GM Chair and
+            # CEO leading...") is read as a row of its own.
+            if not _HANDLE_RE.match(n["label"].strip()):
+                continue
+            handle = n["label"].strip()
+            if handle in rows:
+                continue
+            y = n["bounds"][1]
+            name = next((m["label"] for m in reversed(labelled[:i])
+                         if m["label"] and not m["label"].startswith("@")
+                         and m["label"] not in ("Verified", "Following",
+                                                "Follow")), None)
+            # bio is the first long run of text below the handle
+            bio = next((m["label"] for m in labelled[i + 1:]
+                        if len(m["label"]) > 25
+                        and m["bounds"][1] >= y), "")
+            btn = next((m for m in labelled[i:]
+                        if m["label"] in ("Following", "Follow")
+                        and abs(m["bounds"][1] - y) < 160), None)
+            rows[handle] = {"handle": handle, "name": name, "bio": bio[:220],
+                            "button": btn["label"] if btn else None,
+                            "button_at": btn["center"] if btn else None}
+            order.append(handle)
+            fresh += 1
+        barren = 0 if fresh else barren + 1
+        if barren >= 2:
+            break
+        dev.shell("input swipe 540 1800 540 900 300", serial=serial)
+        time.sleep(1.0)
+    return {"count": len(order), "accounts": [rows[h] for h in order]}
+
+
+def unfollow(handle: str, apply: bool = False, serial: str = "") -> dict:
+    """Unfollow one account from the Following list.
+
+    Tapping the `Following` button opens a confirmation sheet; this matches the
+    confirm control by LABEL like every other mutation here, so a layout change
+    makes it refuse rather than tap something else. Irreversible in practice -
+    re-following does not restore the ranker's history - which is why it
+    journals and why the caller should have seen the list first.
+    """
+    nodes = _nodes(_raw_xml(serial))
+    row = next((n for n in nodes if n["label"].strip().lower()
+                == handle.strip().lower()), None)
+    if not row:
+        return {"error": "handle not on screen", "handle": handle,
+                "hint": "scroll the following list to it first"}
+    y = row["bounds"][1]
+    btn = next((n for n in nodes
+                if n["label"] == "Following"
+                and abs(n["bounds"][1] - y) < 160), None)
+    if not btn:
+        return {"error": "no Following button beside that row",
+                "handle": handle, "note": "already unfollowed?"}
+    plan = {"action": "unfollow", "handle": handle, "tap": btn["center"]}
+    if not apply:
+        return {"applied": False, "plan": plan}
+
+    _tap(*btn["center"], serial=serial, settle=1.8)
+    confirm = next((n for n in _nodes(_raw_xml(serial))
+                    if n["label"].strip().lower() == "unfollow"), None)
+    if confirm:
+        _tap(*confirm["center"], serial=serial, settle=1.5)
+        plan["confirmed"] = True
+    else:
+        plan["confirmed"] = False      # some builds unfollow without a sheet
+    _journal(plan)
+    return {"applied": True, "plan": plan}
+
+
+# --------------------------------------------------------------------------
+# cost accounting
+# --------------------------------------------------------------------------
+#
+# Every feed action is a sequence of device round trips, and the round trips
+# dominate: a dump is ~0.2-0.5 s and a tap costs its settle time whether or not
+# anything happened. Without per-action costs, "make the feed football" is
+# untimeable and there is no way to know whether a campaign is slow because of
+# the searches, the likes, or the measurement. So the public entry points are
+# wrapped and every call is recorded.
+#
+# This measures WALL TIME on the host, which is what the caller waits for. It
+# includes the deliberate `settle` sleeps after taps, because those are a real
+# part of what an action costs - they are not overhead to be optimised away
+# without changing behaviour.
+
+TIMINGS: list = []
+
+_INSTRUMENTED = (
+    "timelines", "surface", "ensure_home", "switch_timeline",
+    "post_options", "not_interested", "add_to_list", "like",
+    "open_timelines_screen", "search_timelines", "pin",
+    "search", "switch_result_tab", "snapshot", "consume", "engage",
+    "open_following", "following_list", "unfollow",
+)
+
+
+def _instrument() -> None:
+    import functools
+    g = globals()
+    for name in _INSTRUMENTED:
+        fn = g.get(name)
+        if fn is None or getattr(fn, "_timed", False):
+            continue
+
+        @functools.wraps(fn)
+        def wrapper(*a, _fn=fn, _name=name, **kw):
+            t0 = time.time()
+            ok = True
+            try:
+                return _fn(*a, **kw)
+            except Exception:
+                ok = False
+                raise
+            finally:
+                TIMINGS.append({"action": _name,
+                                "seconds": round(time.time() - t0, 2),
+                                "ok": ok, "at": round(time.time(), 2)})
+
+        wrapper._timed = True
+        g[name] = wrapper
+
+
+def reset_timings() -> None:
+    TIMINGS.clear()
+
+
+def cost_report(reset: bool = False) -> dict:
+    """Per-action cost: calls, total, mean, share of the run.
+
+    The share column is the one that matters when deciding what to optimise -
+    an action costing 3 s is irrelevant if it runs once, and an action costing
+    0.4 s dominates if it runs two hundred times.
+    """
+    agg: dict = {}
+    for t in TIMINGS:
+        a = agg.setdefault(t["action"], {"calls": 0, "total_s": 0.0,
+                                         "failed": 0})
+        a["calls"] += 1
+        a["total_s"] += t["seconds"]
+        if not t["ok"]:
+            a["failed"] += 1
+    grand = sum(a["total_s"] for a in agg.values()) or 1.0
+    for a in agg.values():
+        a["mean_s"] = round(a["total_s"] / a["calls"], 2)
+        a["total_s"] = round(a["total_s"], 1)
+        a["share"] = round(a["total_s"] / grand, 3)
+    rows = sorted(agg.items(), key=lambda kv: -kv[1]["total_s"])
+    out = {"actions": dict(rows), "total_s": round(grand, 1),
+           "calls": len(TIMINGS)}
+    if reset:
+        reset_timings()
+    return out
+
+
+_instrument()
