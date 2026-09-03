@@ -88,6 +88,28 @@ def load_safetensors(path: Path) -> dict:
 
 _PUNCT = re.compile(r"([^\w\s]|_)", re.UNICODE)
 
+_URL = re.compile(r"https?://\S+|\b\w+\.(?:com|org|net|co|in|io)/\S*", re.I)
+_HASHTAG = re.compile(r"#(\w+)")
+_MENTION = re.compile(r"@\w+")
+_CAMEL = re.compile(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
+
+
+def normalise(text: str) -> str:
+    """Turn social-media text into something a word tokenizer can read.
+
+    Hashtags are the big one. "#ShahidKapoor" is one unknown word that shatters
+    into meaningless subwords, and mean pooling then buries the signal: the very
+    same post scored 0.097 against "bollywood film gossip" written with hashtags
+    and 0.316 with plain words. Splitting on camel case recovers it.
+
+    URLs and @mentions contribute nothing but noise to a topical judgement -
+    every character of them is averaged into the vector - so they go.
+    """
+    text = _URL.sub(" ", text or "")
+    text = _MENTION.sub(" ", text)
+    text = _HASHTAG.sub(lambda m: " " + _CAMEL.sub(" ", m.group(1)) + " ", text)
+    return text
+
 
 class WordPiece:
     """Greedy longest-match-first WordPiece, the BERT tokenizer's core.
@@ -171,7 +193,7 @@ class Embedder:
                 self.skip.add(self.vocab[special])
 
     def encode(self, text: str) -> np.ndarray:
-        ids = [i for i in self.tok.encode(text or "") if i not in self.skip]
+        ids = [i for i in self.tok.encode(normalise(text)) if i not in self.skip]
         if not ids:
             return np.zeros(self.dim, dtype=np.float32)
         v = self.emb[ids].mean(axis=0)      # static embeddings: mean pooling
@@ -236,7 +258,9 @@ def main() -> int:
         texts = ["Toxic advance booking record for Yash",
                  "Arsenal beat Chelsea 2-0 at the Emirates",
                  "Nuclear-armed states ramped up arsenals in 2025",
-                 "Started & runs 37signals, makers of Basecamp"]
+                 "Started & runs 37signals, makers of Basecamp",
+                 "CONFIRMED: #ShahidKapoor and #AliaBhatt in #DRAGON",
+                 "Letssss Goooo #BiggBoss20 get ready"]
         t1 = time.time()
         s = score(q, texts)
         print(json.dumps({"loaded_ms": load_ms, "dim": EMB.dim,

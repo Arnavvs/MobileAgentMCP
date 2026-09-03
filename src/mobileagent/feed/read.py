@@ -26,8 +26,11 @@ treatment.
 
 from __future__ import annotations
 
+import json
+import os
 import re
 import time
+import urllib.request
 from typing import Optional
 
 from .. import device as dev
@@ -157,3 +160,96 @@ def summarise(posts: list[dict]) -> dict:
     return {"n": len(posts), "counts": counts,
             "football_share": round(counts.get("football", 0) / len(posts), 2),
             "politics_share": round(counts.get("politics", 0) / len(posts), 2)}
+
+
+# --------------------------------------------------------------------------
+# embedding relevance, served from the phone
+# --------------------------------------------------------------------------
+#
+# `tag()` below is a keyword pre-filter and its failures are structural, not
+# tuning: it called "Started & runs 37signals, makers of Basecamp" POLITICS
+# because `mp\b` matches inside "Basecamp", and "Nuclear-armed states ramped up
+# arsenals" FOOTBALL because of `arsenal`. A keyword has no notion of meaning.
+#
+# So relevance is now a similarity against the QUERY, computed by
+# `phone/relevance_server.py` running in Termux on the device itself
+# (potion-base-8M static embeddings, 256-dim, ~1 ms for a screenful). Measured
+# on the same two failures:
+#
+#     text                                       football  bollywood  politics
+#     Nuclear-armed states ramped up arsenals       0.038     -0.092     0.150
+#     ... makers of Basecamp and HEY                0.005     -0.035    -0.004
+#     Arsenal beat Chelsea 2-0                      0.291      0.092    -0.003
+#     Toxic advance booking record for Yash        -0.039      0.196    -0.008
+#     Rahul Gandhi on vote chori in Lok Sabha      -0.047      0.092     0.469
+#
+# Reach it with: adb forward tcp:8765 tcp:8765
+# It degrades to the regex when the phone is not serving, so a campaign never
+# stops just because the server is down - but it says which one it used.
+
+RELEVANCE_URL = os.environ.get("RELEVANCE_URL", "http://127.0.0.1:8765")
+
+# True topical matches above sat at 0.196-0.469 and clear non-matches at
+# -0.09..0.09, so the gap is wide. 0.12 keeps the weak-but-real matches
+# (a football post scoring 0.092 for "bollywood" stays out) without demanding
+# the very high scores only exact-topic posts reach.
+RELEVANCE_THRESHOLD = 0.12
+
+_relevance_up: Optional[bool] = None
+
+
+def relevance_available(timeout: float = 2.0) -> bool:
+    """Whether the on-device scorer is reachable. Cached after the first check."""
+    global _relevance_up
+    if _relevance_up is not None:
+        return _relevance_up
+    try:
+        with urllib.request.urlopen(RELEVANCE_URL + "/health", timeout=timeout) as r:
+            _relevance_up = bool(json.loads(r.read()).get("ok"))
+    except Exception:
+        _relevance_up = False
+    return _relevance_up
+
+
+def relevance(query: str, texts: list, timeout: float = 8.0) -> Optional[list]:
+    """Cosine similarity of each text to `query`. None when unavailable."""
+    if not texts or not relevance_available():
+        return None
+    try:
+        req = urllib.request.Request(
+            RELEVANCE_URL + "/score",
+            data=json.dumps({"query": query, "texts": texts}).encode(),
+            headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return json.loads(r.read()).get("scores")
+    except Exception:
+        return None
+
+
+def score_posts(posts: list, query: str,
+                threshold: float = RELEVANCE_THRESHOLD) -> dict:
+    """Annotate posts in place with `relevance` and `relevant`.
+
+    Falls back to the regex tag when the device scorer is unreachable, and
+    reports which path was taken - a run scored by keywords should never be
+    mistaken for one scored by meaning.
+    """
+    # Text ONLY. Appending the handle measurably hurts: a handle tokenises into
+    # meaningless subwords that pull the mean toward noise, and mean pooling has
+    # no way to down-weight them. Measured against "bollywood film gossip":
+    # "Toxic advance booking record for Yash" scores 0.196 alone and 0.072 with
+    # a handle glued on - enough to cross a threshold in the wrong direction.
+    # Fall back to the handle only when there is no text at all.
+    texts = [(p.get("text") or p.get("handle") or "") for p in posts]
+    scores = relevance(query, texts)
+    if scores is None:
+        topic = query.split()[0].lower() if query else ""
+        for p in posts:
+            p["relevance"] = None
+            p["relevant"] = topic in (p.get("topics") or tag(p))
+        return {"backend": "regex", "threshold": None, "n": len(posts)}
+    for p, s in zip(posts, scores):
+        p["relevance"] = s
+        p["relevant"] = s >= threshold
+    return {"backend": "embedding", "threshold": threshold, "n": len(posts),
+            "matched": sum(1 for p in posts if p["relevant"])}
