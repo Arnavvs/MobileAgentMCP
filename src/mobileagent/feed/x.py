@@ -43,6 +43,11 @@ _TAB_Y_MIN, _TAB_Y_MAX = 280, 460
 _TAB_SKIP = {"add tab", "scroll to top", "show navigation drawer",
              "find people to follow"}
 
+# The visible content band: below the sticky header (tab strip ends ~451) and
+# above the bottom nav (~2200). Nodes outside it are in the tree but covered by
+# chrome, so tapping them hits the chrome instead of the post.
+_CONTENT_TOP, _CONTENT_BOTTOM = 470, 2150
+
 _BOUNDS = re.compile(r"\[(-?\d+),(-?\d+)\]\[(-?\d+),(-?\d+)\]")
 
 JOURNAL = Path(__file__).resolve().parents[3] / "artifacts" / "feed" / "journal.jsonl"
@@ -52,9 +57,35 @@ JOURNAL = Path(__file__).resolve().parents[3] / "artifacts" / "feed" / "journal.
 # raw helpers
 # --------------------------------------------------------------------------
 
+_U2: dict = {}
+
+
 def _raw_xml(serial: str = "") -> str:
-    dev.shell("uiautomator dump /sdcard/xfeed.xml", serial=serial)
-    return dev.adb("exec-out", "cat", "/sdcard/xfeed.xml", serial=serial)
+    """One dump path for the whole feed package, u2-backed.
+
+    Two reasons, both learned the hard way:
+
+    1. **They cannot coexist.** `uiautomator2` IS a UiAutomation, which is a
+       special AccessibilityService, and Android permits exactly one. Reading
+       through u2 (feed/read.py) while acting through shell `uiautomator dump`
+       kills one of them - observed as the dump exiting 137 (SIGKILL) mid-run.
+       The README warned about this for the phase-1/phase-2 backends; it applies
+       just as much to two paths inside one process.
+    2. **u2 is 12x faster** - 0.21 s against 2.47 s for shell dump + cat,
+       measured on this device over USB - and it returns the full tree where the
+       shell dump returns a compressed one (~25 KB vs ~8 KB).
+
+    Falls back to the shell path if u2 cannot start, so a device without the
+    agent still works, just slowly.
+    """
+    try:
+        d = _U2.get(serial)
+        if d is None:
+            d = _U2[serial] = dev.u2(serial)
+        return d.dump_hierarchy()
+    except Exception:
+        dev.shell("uiautomator dump /sdcard/xfeed.xml", serial=serial)
+        return dev.adb("exec-out", "cat", "/sdcard/xfeed.xml", serial=serial)
 
 
 def _nodes(xml: str) -> list[dict]:
@@ -665,11 +696,21 @@ def like(nth: int = 0, apply: bool = False, serial: str = "") -> dict:
     journalled.
     """
     nodes = _nodes(_raw_xml(serial))
-    likes = sorted([n for n in nodes if n["label"].strip().lower() == "like"],
+    # Only controls in the CONTENT band. A post scrolled up under X's sticky
+    # header keeps its Like button in the tree at a y the header now covers, so
+    # an unguarded "topmost Like" tap lands on the header instead - on a search
+    # screen that is the query field, which opens the suggestions/People view.
+    # Observed 2026-09-03: likes journalled at y=230/245/282, above the result
+    # tab strip at y=307, having liked nothing at all.
+    likes = sorted([n for n in nodes
+                    if n["label"].strip().lower() == "like"
+                    and _CONTENT_TOP < n["bounds"][1] < _CONTENT_BOTTOM],
                    key=lambda n: n["bounds"][1])
     if nth >= len(likes):
-        return {"error": "not that many like controls visible",
-                "visible": len(likes), "wanted": nth}
+        return {"error": "no like control in the content band",
+                "visible": len(likes), "wanted": nth,
+                "note": "controls above y=%d are under the sticky header"
+                        % _CONTENT_TOP}
     plan = {"action": "like", "nth": nth, "tap": likes[nth]["center"],
             "surface": surface(serial, nodes=nodes)["surface"]}
     if not apply:
@@ -749,4 +790,86 @@ def consume(duration_s: float = 120.0, dwell_min: float = 1.5,
                                ensure_ascii=False), encoding="utf-8")
     rec["path"] = str(path)
     _journal(plan)
+    return rec
+
+
+def engage(duration_s: float = 120.0, like_every: int = 2,
+           dwell_min: float = 1.2, dwell_max: float = 3.5,
+           apply: bool = False, out_dir: str = "", serial: str = "") -> dict:
+    """Read a feed AND like posts on it, at a chosen rate.
+
+    Separate from `consume()` on purpose. `consume()` performs no action a
+    reader does not; this one writes `favorite` events, which are a scored
+    action in xai-org/x-algorithm and therefore a direct ranking input. Keeping
+    them as two functions means a caller - and anyone reading the journal later
+    - can always tell which lever produced a change, and `consume()` stays
+    usable as a treatment that does not touch engagement.
+
+    The account owner's position, 2026-09-03: dwell alone does not move the
+    feed fast enough, so likes are wanted. That is their call on their own
+    account. The measurement consequence is real and worth stating: with both
+    levers firing at once, a later composition change cannot be attributed to
+    either one. Run `consume()` alone if attribution matters more than speed.
+
+    Only taps a control whose label is exactly "Like" - never "Liked" - so a
+    pass cannot silently UNLIKE a post the owner had already liked. Every run is
+    journalled with its rate and its like count.
+    """
+    import random
+    from ..tools.apps.twitter import assemble_tweets
+
+    surf = surface(serial)
+    plan = {"action": "engage", "duration_s": duration_s,
+            "like_every": like_every, "dwell_s": [dwell_min, dwell_max],
+            "surface": surf}
+    if not apply:
+        return {"applied": False, "plan": plan,
+                "note": "engagement write - likes are a ranking input"}
+
+    t0 = time.time()
+    seen: dict[str, dict] = {}
+    liked: list[str] = []
+    steps = 0
+    while time.time() - t0 < duration_s:
+        xml = _raw_xml(serial)
+        nodes = _nodes(xml)
+        for tw in assemble_tweets(uix.parse(xml)):
+            seen.setdefault("%s|%s" % (tw.get("handle"),
+                                       (tw.get("text") or "")[:70]), tw)
+
+        if like_every and steps % like_every == 0:
+            # Exact match only: "Liked" means it is already favourited and
+            # tapping would REMOVE the owner's like.
+            cands = sorted([n for n in nodes
+                            if n["label"].strip() == "Like"
+                            and 500 < n["bounds"][1] < 2000],
+                           key=lambda n: n["bounds"][1])
+            if cands:
+                _tap(*cands[0]["center"], serial=serial, settle=0.8)
+                liked.append("y=%d" % cands[0]["bounds"][1])
+
+        time.sleep(random.uniform(dwell_min, dwell_max))
+        dev.shell("input swipe 540 1700 540 800 %d"
+                  % random.randint(240, 420), serial=serial)
+        steps += 1
+        time.sleep(random.uniform(0.4, 1.0))
+
+    tweets = list(seen.values())
+    authors: dict[str, int] = {}
+    for tw in tweets:
+        h = tw.get("handle") or "?"
+        authors[h] = authors.get(h, 0) + 1
+    rec = {"applied": True, "plan": plan, "steps": steps,
+           "likes_fired": len(liked),
+           "elapsed_s": round(time.time() - t0, 1),
+           "distinct_posts": len(tweets), "distinct_authors": len(authors),
+           "top_authors": sorted(authors.items(), key=lambda kv: -kv[1])[:10]}
+
+    out = Path(out_dir) if out_dir else JOURNAL.parent
+    out.mkdir(parents=True, exist_ok=True)
+    path = out / ("x-engage-" + time.strftime("%Y%m%d-%H%M%S") + ".json")
+    path.write_text(json.dumps({**rec, "tweets": tweets}, indent=2,
+                               ensure_ascii=False), encoding="utf-8")
+    rec["path"] = str(path)
+    _journal({**plan, "likes_fired": len(liked)})
     return rec

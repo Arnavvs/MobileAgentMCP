@@ -80,6 +80,10 @@ def main() -> int:
 
     sub.add_parser("surface", help="which ranked surface is on screen")
 
+    sp = sub.add_parser("read", help="read posts on screen NOW (fast, u2)")
+    sp.add_argument("--scrolls", type=int, default=0,
+                    help="scroll+read this many times instead of one read")
+
     sp = sub.add_parser("search", help="Explore search; the route that works")
     sp.add_argument("query")
     sp.add_argument("--tab", default="", help="top|latest|people|media|lists")
@@ -123,6 +127,21 @@ def main() -> int:
         r = xf.search_timelines(a.query, serial=s)
     elif a.cmd == "pin":
         r = xf.pin(a.name, unpin=a.unpin, apply=a.apply, serial=s)
+    elif a.cmd == "read":
+        from mobileagent.feed import read as rd
+        from mobileagent import device as _dev
+        import time as _t
+        rdr = rd.Reader(s)
+        seen = {}
+        for i in range(max(1, a.scrolls)):
+            for p in rdr.posts():
+                seen.setdefault((p["handle"], (p["text"] or "")[:40]), p)
+            if a.scrolls:
+                _dev.shell("input swipe 540 1700 540 900 260", serial=s)
+                _t.sleep(0.5)
+        posts = list(seen.values())
+        r = {"posts": posts, "summary": rd.summarise(posts),
+             "reader": rdr.stats()}
     elif a.cmd == "surface":
         r = xf.surface(serial=s)
     elif a.cmd == "search":
