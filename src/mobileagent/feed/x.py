@@ -48,6 +48,11 @@ _TAB_SKIP = {"add tab", "scroll to top", "show navigation drawer",
 # chrome, so tapping them hits the chrome instead of the post.
 _CONTENT_TOP, _CONTENT_BOTTOM = 470, 2150
 
+# Wide nodes that are chrome, not a post body.
+_NOT_BODY_LABELS = {"video", "image", "gif", "unmute", "mute", "install",
+                    "show more", "show this thread", "translated from",
+                    "show original", "explain this post with grok"}
+
 _HANDLE_RE = re.compile(r"^@[A-Za-z0-9_]{1,15}$")
 
 _BOUNDS = re.compile(r"\[(-?\d+),(-?\d+)\]\[(-?\d+),(-?\d+)\]")
@@ -989,6 +994,144 @@ def unfollow(handle: str, apply: bool = False, serial: str = "") -> dict:
     return {"applied": True, "plan": plan}
 
 
+
+
+# --------------------------------------------------------------------------
+# opening a post - the strong engagement signal
+# --------------------------------------------------------------------------
+#
+# Scrolling past a relevant post is a weak signal; opening it is not. A tap on
+# the body is a click, the detail view produces real dwell, and the replies are
+# more on-topic text to read. `click`, `open_link`, `quoted_click` and `dwell`
+# are all separately scored actions in xai-org/x-algorithm, so a post that is
+# opened, read and liked sends four signals where a scroll-past sends none.
+
+_DETAIL_MARKS = ("post your reply", "open full composer", "reply to")
+
+
+def in_post_detail(serial: str = "", nodes: Optional[list] = None) -> bool:
+    """Whether a single post is open, rather than a list of them."""
+    if nodes is None:
+        nodes = _nodes(_raw_xml(serial))
+    labs = {n["label"].strip().lower() for n in nodes if n["label"]}
+    return any(m in l for l in labs for m in _DETAIL_MARKS)
+
+
+def open_post(nth: int = 0, serial: str = "", settle: float = 2.5) -> dict:
+    """Open the nth visible post by tapping its body.
+
+    Targets the widest text node in the content band rather than a control:
+    tapping metrics toggles them, tapping media plays it, and only the body
+    opens the post. Verifies afterwards, because a tap that silently did
+    nothing would otherwise be scored as a successful open.
+    """
+    from ..tools.apps.twitter import assemble_tweets
+
+    xml = _raw_xml(serial)
+    nodes = _nodes(xml)
+
+    # NEVER open an ad. A promoted post's body is not a post link - tapping one
+    # opened the Play Store install sheet for a crypto wallet on 2026-09-03.
+    # An unattended loop doing that is installing apps, not reading a feed.
+    ad_text = {(t.get("text") or "")[:40]
+               for t in assemble_tweets(uix.parse(xml)) if t.get("is_ad")}
+
+    # Length is a poor filter for a post body: "2027 UCL winners" is 16
+    # characters and a perfectly real post. Width plus an exclusion list does
+    # the work instead - a body spans the column, chrome does not.
+    bodies = [n for n in nodes
+              if n["label"] and len(n["label"]) >= 8
+              and (n["bounds"][2] - n["bounds"][0]) > 600
+              and _CONTENT_TOP < n["bounds"][1] < _CONTENT_BOTTOM
+              and n["label"].strip().lower() not in _NOT_BODY_LABELS
+              and n["label"][:40] not in ad_text]
+    bodies.sort(key=lambda n: n["bounds"][1])
+    if nth >= len(bodies):
+        return {"error": "no non-ad post body in the content band",
+                "visible": len(bodies), "ads_skipped": len(ad_text)}
+    target = bodies[nth]
+    _tap(*target["center"], serial=serial, settle=settle)
+
+    # A tap can leave X entirely - an ad we failed to spot, or a link in the
+    # body. Get back before anything else runs, and say so.
+    fg = dev.foreground(serial=serial).get("package") or ""
+    if fg != X_PKG:
+        for _ in range(3):
+            dev.shell("input keyevent KEYCODE_BACK", serial=serial)
+            time.sleep(1.2)
+            if (dev.foreground(serial=serial).get("package") or "") == X_PKG:
+                break
+        return {"opened": False, "left_app": fg, "tapped": target["center"],
+                "note": "tap left X (ad or external link); backed out"}
+
+    if not in_post_detail(serial):
+        return {"opened": False, "tapped": target["center"],
+                "note": "tap did not open a detail view"}
+    return {"opened": True, "text": target["label"][:120],
+            "tapped": target["center"]}
+
+
+def close_post(serial: str = "", settle: float = 1.5) -> dict:
+    """Back out of a detail view, and confirm we actually left it."""
+    dev.shell("input keyevent KEYCODE_BACK", serial=serial)
+    time.sleep(settle)
+    return {"closed": not in_post_detail(serial)}
+
+
+def read_replies(scrolls: int = 2, serial: str = "",
+                 dwell: float = 1.6) -> dict:
+    """Scroll an open post and collect its replies.
+
+    Dwell is the point as much as the text: time spent in a detail view is what
+    separates reading a post from scrolling past it.
+    """
+    from ..tools.apps.twitter import assemble_tweets
+
+    seen: dict = {}
+    for _ in range(max(1, scrolls)):
+        for t in assemble_tweets(uix.parse(_raw_xml(serial))):
+            seen.setdefault("%s|%s" % (t.get("handle"),
+                                       (t.get("text") or "")[:60]), t)
+        time.sleep(dwell)
+        dev.shell("input swipe 540 1700 540 900 300", serial=serial)
+        time.sleep(0.5)
+    return {"replies_seen": len(seen),
+            "handles": [t.get("handle") for t in seen.values()][:12]}
+
+
+def engage_post(nth: int = 0, like_it: bool = True, reply_scrolls: int = 2,
+                apply: bool = False, serial: str = "") -> dict:
+    """Open a post, read its replies, optionally like it, and come back.
+
+    The full interaction a reader performs, in one call. Liking happens INSIDE
+    the detail view, where the topmost Like control unambiguously belongs to the
+    opened post - on a list it belongs to whichever post happens to be highest.
+    Always returns to the list, even when a step fails, so a campaign loop does
+    not continue from an unexpected screen.
+    """
+    out = {"nth": nth, "applied": apply}
+    if not apply:
+        out["plan"] = {"action": "engage_post", "nth": nth,
+                       "would": ["open", "read_replies", "like" if like_it
+                                 else "no_like", "back"]}
+        return out
+
+    opened = open_post(nth, serial=serial)
+    out["open"] = opened
+    if not opened.get("opened"):
+        return out
+    try:
+        out["replies"] = read_replies(reply_scrolls, serial=serial)
+        if like_it:
+            out["like"] = like(0, apply=True, serial=serial)
+    finally:
+        out["close"] = close_post(serial=serial)
+    _journal({"action": "engage_post", "nth": nth,
+              "liked": bool(like_it and out.get("like", {}).get("applied")),
+              "replies_seen": out.get("replies", {}).get("replies_seen")})
+    return out
+
+
 # --------------------------------------------------------------------------
 # cost accounting
 # --------------------------------------------------------------------------
@@ -1013,6 +1156,7 @@ _INSTRUMENTED = (
     "open_timelines_screen", "search_timelines", "pin",
     "search", "switch_result_tab", "snapshot", "consume", "engage",
     "open_following", "following_list", "unfollow",
+    "open_post", "close_post", "read_replies", "engage_post",
 )
 
 

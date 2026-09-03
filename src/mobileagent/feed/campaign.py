@@ -109,13 +109,22 @@ def work_topic(keyword: str, seconds: float = 90.0, likes: int = 6,
         on_topic = posts and topic in (posts[0].get("topics") or [])
 
         if on_topic and liked < likes:
-            # dwell first, then like: dwell is itself a scored action, and a
-            # like with no dwell in front of it is not what a reader does.
-            time.sleep(random.uniform(1.6, 3.4))
+            # OPEN the post rather than scrolling past it. Scrolling past a
+            # relevant post sends nothing; opening it sends a click, real dwell
+            # in the detail view, and the replies are more on-topic text. The
+            # account owner's point, 2026-09-03, and it matches the ranker:
+            # click, dwell and favorite are three separate scored actions.
             if apply:
-                r = xf.like(0, apply=True, serial=serial)
-                if r.get("applied"):
-                    liked += 1
+                r = xf.engage_post(0, like_it=True, reply_scrolls=2,
+                                   apply=True, serial=serial)
+                if r.get("open", {}).get("opened"):
+                    opened += 1
+                    if r.get("like", {}).get("applied"):
+                        liked += 1
+                else:
+                    # could not open (ad, or a tap that went nowhere) - do not
+                    # burn the budget on it, just move on
+                    time.sleep(random.uniform(0.4, 0.9))
             else:
                 liked += 1
         else:
@@ -126,6 +135,7 @@ def work_topic(keyword: str, seconds: float = 90.0, likes: int = 6,
 
     out["read"] = rd.summarise(list(seen.values()))
     out["liked"] = liked
+    out["opened"] = opened
     out["follow"] = follow_visible(reader, follows, topic, apply, serial)
     out["reader"] = reader.stats()
     out["elapsed_s"] = round(time.time() - t0, 1)
@@ -134,7 +144,7 @@ def work_topic(keyword: str, seconds: float = 90.0, likes: int = 6,
 
 def feed_pass(seconds: float = 60.0, topic: str = "football",
               avoid: str = "politics", apply: bool = False,
-              serial: str = "") -> dict:
+              serial: str = "", max_opens: int = 3) -> dict:
     """Work the main feed: linger on `topic`, scroll straight past `avoid`.
 
     The asymmetry is the whole point. Dwell is a positive signal and a fast
@@ -146,7 +156,7 @@ def feed_pass(seconds: float = 60.0, topic: str = "football",
     xf.switch_timeline("For you", serial=serial)
 
     seen: dict = {}
-    dwelt = skipped = 0
+    dwelt = skipped = opened = 0
     t0 = time.time()
     while time.time() - t0 < seconds:
         posts = reader.posts()
@@ -154,7 +164,16 @@ def feed_pass(seconds: float = 60.0, topic: str = "football",
             seen.setdefault((p["handle"], (p["text"] or "")[:40]), p)
         tops = (posts[0].get("topics") or []) if posts else []
         if topic in tops:
-            time.sleep(random.uniform(2.0, 4.0))
+            # Same rule on the main feed: a relevant post that appears here is
+            # worth opening, not just lingering on. This is the signal that
+            # tells the ranker its guess landed.
+            if apply and opened < max_opens:
+                r = xf.engage_post(0, like_it=True, reply_scrolls=1,
+                                   apply=True, serial=serial)
+                if r.get("open", {}).get("opened"):
+                    opened += 1
+            else:
+                time.sleep(random.uniform(2.0, 4.0))
             dwelt += 1
             _swipe(serial)
         else:
@@ -165,7 +184,7 @@ def feed_pass(seconds: float = 60.0, topic: str = "football",
         time.sleep(0.3)
 
     return {"applied": apply, "dwelt_on_topic": dwelt,
-            "scrolled_past": skipped,
+            "opened": opened, "scrolled_past": skipped,
             "read": rd.summarise(list(seen.values())),
             "reader": reader.stats(),
             "elapsed_s": round(time.time() - t0, 1)}
