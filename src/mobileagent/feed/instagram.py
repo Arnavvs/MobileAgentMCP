@@ -47,6 +47,11 @@ IG_PKG = "com.instagram.android"
 _OPTION_RID = "control_option_text"
 _MORE_RID = "clips_ufi_more_button_component"
 
+# Meta's description sits under its own heading in the sheet, and the heading is
+# the only reliable way to find it. Both nodes are unnamed, so the description
+# is "the text node just after this one" - see `open_more`.
+_ABOUT_HDR = "about this reel"
+
 # Every one of these WRITES to the account. Named so a caller cannot tap one by
 # accident while meaning to read the sheet.
 _WRITES = {"interested", "not interested", "report", "save"}
@@ -116,9 +121,29 @@ def reel_info(serial: str = "", nodes: Optional[list] = None) -> dict:
         digits = "".join(c for c in s if c.isdigit())
         return int(digits) if digits else None
 
+    # The caption and the "X liked this reel" line carry no resource-id, so they
+    # are found by where they sit relative to the username, which does. The
+    # caption rid this used to read (`clips_caption_component`) does not exist
+    # on this surface, so `caption` was always None and nobody noticed.
+    author_node = next((n for n in nodes
+                        if n["rid"] == "clips_author_username"), None)
+    caption = proof = None
+    if author_node:
+        ay = author_node["center"][1]
+        for n in nodes:
+            lab = (n["label"] or "").strip()
+            if not lab or n["rid"]:
+                continue
+            y = n["center"][1]
+            if "liked this reel" in lab.lower():
+                proof = lab
+            elif caption is None and ay < y <= ay + 400:
+                caption = lab
+
     return {
         "author": by_rid.get("clips_author_username"),
-        "caption": by_rid.get("clips_caption_component"),
+        "caption": caption,
+        "social_proof": proof,
         "likes": num("like_count"),
         "comments": num("comment_count"),
         "reposts": num("repost_count"),
@@ -126,14 +151,42 @@ def reel_info(serial: str = "", nodes: Optional[list] = None) -> dict:
     }
 
 
-def open_more(serial: str = "", wait_s: float = 10.0,
-              poll_s: float = 1.2) -> dict:
-    """Open the reel's More sheet and wait for Meta's description to generate.
+def _about_text(nodes: list, idx: int) -> Optional[str]:
+    """The description body, which is the unnamed text node after the heading."""
+    for n in nodes[idx + 1:idx + 6]:
+        lab = (n["label"] or "").strip()
+        if lab and not n["rid"] and len(lab) > 20:
+            return lab
+    return None
+
+
+def open_more(serial: str = "", wait_s: float = 15.0, poll_s: float = 0.4,
+              header_grace: float = 5.0) -> dict:
+    """Open the reel's More sheet and read Meta's description from under its heading.
 
     The More control's touch target is unreliable - a single tap often does
-    nothing - so this retries rather than reporting a reel as having no
+    nothing - so opening retries rather than reporting a reel as having no
     description when the sheet never opened. Those two failures look identical
     from the outside and must not be confused.
+
+    Finding the description used to mean taking the longest unnamed text node in
+    the sheet, and that was wrong in a way that did not look wrong. The sheet
+    also carries the audio credit ("Salim-Sulaiman, Sukhwinder Singh - Haule
+    Haule") and the reel's caption, both unnamed and both long enough to pass a
+    length test. The description generates a beat AFTER the sheet renders, so
+    for that beat the longest node is the music, and a reader that returns the
+    first candidate it sees returns the music. A 20-reel pass recorded 7 track
+    listings as descriptions and reported them as a 95% success rate.
+
+    So the anchor is the heading, not the length. "About this reel" is a node of
+    its own and the description is the text node after it; until that text
+    exists there is no description, however much other text the sheet holds.
+
+    Waiting is split in two, because the two absences are different. A sheet
+    that shows no heading within `header_grace` has no description section at
+    all and never will - that is an older reel, and waiting longer only costs
+    time. A heading whose body has not filled in is still generating, and gets
+    the full `wait_s`.
     """
     for attempt in range(3):
         nodes = _nodes(_raw_xml(serial))
@@ -147,31 +200,36 @@ def open_more(serial: str = "", wait_s: float = 10.0,
     else:
         return {"opened": False, "error": "More sheet would not open"}
 
-    deadline = time.time() + wait_s
-    desc, options = None, []
-    while time.time() < deadline:
+    t0 = time.time()
+    desc, options, header_seen, audio = None, [], False, None
+    while time.time() - t0 < wait_s:
         nodes = _nodes(_raw_xml(serial))
         options = [n["label"] for n in nodes if n["rid"] == _OPTION_RID]
-        if not options:
-            time.sleep(poll_s)
-            continue
-        # The description is the long, UNNAMED text node in the sheet - it
-        # carries no resource-id, so it is identified by length and by not
-        # being one of the labelled controls or the media node.
-        cands = [n["label"] for n in nodes
-                 if n["label"] and len(n["label"]) > 45
-                 and not n["rid"]
-                 and "double-tap" not in n["label"].lower()]
-        if cands:
-            desc = max(cands, key=len)
-            break
+        idx = next((i for i, n in enumerate(nodes)
+                    if (n["label"] or "").strip().lower() == _ABOUT_HDR), None)
+        if idx is not None:
+            header_seen = True
+            desc = _about_text(nodes, idx)
+            if desc:
+                break
+        elif time.time() - t0 > header_grace:
+            break                       # no section here; nothing to wait for
         time.sleep(poll_s)
 
+    if desc:
+        note = None
+    elif not options:
+        note = "sheet did not render - nothing was read"
+    elif header_seen:
+        note = ("'About this reel' is present but its text had not generated "
+                "after %.0fs" % wait_s)
+    else:
+        note = ("this reel has no 'About this reel' section - Meta has not "
+                "described it, and older reels often never get one")
+
     return {"opened": True, "options": options, "description": desc,
-            "generated": bool(desc),
-            "note": None if desc else
-            "sheet open but no description - older reels often have none, and "
-            "it can also still be generating; raise wait_s to tell them apart"}
+            "generated": bool(desc), "header": header_seen,
+            "waited_s": round(time.time() - t0, 1), "note": note}
 
 
 def close_sheet(serial: str = "", settle: float = 1.2) -> dict:

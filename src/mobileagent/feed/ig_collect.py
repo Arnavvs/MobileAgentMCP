@@ -47,6 +47,10 @@ def collect(n: int = 20, out_dir: str = "", serial: str = "",
     item = None
     try:
         if tail and prime:
+            # A sheet left open by whatever ran last swallows the priming swipe:
+            # nothing scrolls, no id is logged, and the first reel comes back
+            # linkless for a reason that has nothing to do with the feed.
+            ig.close_sheet(serial)
             ig.next_reel(serial)
             item = tail.wait()
 
@@ -125,9 +129,13 @@ def collect(n: int = 20, out_dir: str = "", serial: str = "",
                 "author": author,
                 "profile": ("https://instagram.com/%s" % single)
                            if single else None,
+                "caption": info.get("caption"),
+                "social_proof": info.get("social_proof"),
                 "likes": info.get("likes"), "comments": info.get("comments"),
                 "reposts": info.get("reposts"), "saves": info.get("saves"),
                 "meta_description": desc,
+                "desc_waited_s": sheet.get("waited_s"),
+                "desc_note": sheet.get("note"),
                 "options": sheet.get("options"),
             })
             rows.append(row)
@@ -142,13 +150,24 @@ def collect(n: int = 20, out_dir: str = "", serial: str = "",
 
     # Optional: score every description against each query in one batch, so a
     # collection doubles as a labelled set for choosing thresholds later.
+    # Say why a pass carries no scores. A run once came back silently unscored
+    # because the phone's scorer was up but `adb forward tcp:8765 tcp:8765` was
+    # not, and a missing key looks exactly like a feed nobody asked to score.
     described = [r for r in rows if r.get("meta_description")]
-    if queries and described and rd.relevance_available():
+    scoring = None
+    if not queries:
+        scoring = "no queries given"
+    elif not described:
+        scoring = "nothing to score"
+    elif not rd.relevance_available():
+        scoring = ("scorer unreachable at %s - is it running in Termux, and is "
+                   "`adb forward tcp:8765 tcp:8765` set up?" % rd.RELEVANCE_URL)
+    else:
         texts = [r["meta_description"] for r in described]
         for q in queries:
             scores = rd.relevance(q, texts) or []
-            for r, s in zip(described, scores):
-                r.setdefault("scores", {})[q] = s
+            for r, sc in zip(described, scores):
+                r.setdefault("scores", {})[q] = sc
 
     out = {
         "captured_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
@@ -156,6 +175,7 @@ def collect(n: int = 20, out_dir: str = "", serial: str = "",
         "requested": n, "reels": len(described) + nodesc, "ads": ads,
         "no_description": nodesc,
         "linked": linked, "link_mismatches": mismatches,
+        "described": len(described), "scoring": scoring,
         "seconds": round(time.time() - t0, 1),
         "rows": rows,
     }

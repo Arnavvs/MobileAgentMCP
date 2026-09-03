@@ -204,16 +204,36 @@ RELEVANCE_THRESHOLD = 0.10
 _relevance_up: Optional[bool] = None
 
 
-def relevance_available(timeout: float = 2.0) -> bool:
-    """Whether the on-device scorer is reachable. Cached after the first check."""
+def _health(timeout: float) -> bool:
+    try:
+        with urllib.request.urlopen(RELEVANCE_URL + "/health", timeout=timeout) as r:
+            return bool(json.loads(r.read()).get("ok"))
+    except Exception:
+        return False
+
+
+def relevance_available(timeout: float = 2.0, serial: str = "") -> bool:
+    """Whether the on-device scorer is reachable. Cached after the first check.
+
+    The server runs in Termux and is reached over an `adb forward`, and that
+    forward is the fragile half: it does not survive an adb server restart or
+    the device re-enumerating, while the server itself keeps running. When it
+    goes, every score silently disappears from a pass that otherwise looks
+    healthy - which is how a 20-reel collection came back unscored with the
+    model up the whole time. So a failed check re-establishes the forward once
+    and asks again, rather than reporting a working scorer as absent.
+    """
     global _relevance_up
     if _relevance_up is not None:
         return _relevance_up
-    try:
-        with urllib.request.urlopen(RELEVANCE_URL + "/health", timeout=timeout) as r:
-            _relevance_up = bool(json.loads(r.read()).get("ok"))
-    except Exception:
-        _relevance_up = False
+    _relevance_up = _health(timeout)
+    if not _relevance_up and "127.0.0.1" in RELEVANCE_URL:
+        port = RELEVANCE_URL.rsplit(":", 1)[-1]
+        try:
+            dev.adb("forward", "tcp:%s" % port, "tcp:%s" % port, serial=serial)
+            _relevance_up = _health(timeout)
+        except Exception:
+            pass
     return _relevance_up
 
 
