@@ -42,7 +42,7 @@ TOPICS: dict[str, re.Pattern] = {
     "football": re.compile(
         r"football|soccer|barcelona|barca|real madrid|messi|ronaldo|yamal|"
         r"mbappe|haaland|premier league|la ?liga|uefa|fifa|champions league|"
-        r"arsenal|chelsea|liverpool|man utd|manchester|tottenham|psg|bayern|"
+        r"arsenal|chelsea|liverpool|man utd|manchester|tottenham|psg|bayern|"
         r"juventus|inter milan|striker|midfielder|goalkeeper|transfer window|"
         r"matchday|\bgoal\b|\bgoals\b|penalty|offside|\bfc\b|\bcf\b", re.I),
     "politics": re.compile(
@@ -51,6 +51,15 @@ TOPICS: dict[str, re.Pattern] = {
         r"government|govt\b|vote|voter|democracy|protest|policy|"
         r"trump|biden|senate|republican|democrat|"
         r"[ऀ-ॿ]", re.I),
+    "bollywood": re.compile(
+        # Current storylines first - a live film title matches far more posts
+        # than the word "bollywood" ever does. Refresh these per campaign.
+        r"toxic|dhurandhar|bhooth bangla|border 2|"
+        r"bollywood|tollywood|box office|teaser|trailer|"
+        r"salman|shah ?rukh|srk\b|aamir|ranbir|deepika|alia|katrina|"
+        r"kareena|priyanka|vicky|kartik|ranveer|yash\b|prabhas|"
+        r"karan johar|bhansali|film ?fare|kapoor|khan\b|"
+        r"first day|opening day|crore|advance booking", re.I),
     "ad": None,          # filled from the post's own is_ad flag
 }
 

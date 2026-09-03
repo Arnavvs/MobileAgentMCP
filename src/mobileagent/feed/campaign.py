@@ -116,7 +116,8 @@ def work_topic(keyword: str, seconds: float = 90.0, likes: int = 6,
             # click, dwell and favorite are three separate scored actions.
             if apply:
                 r = xf.engage_post(0, like_it=True, reply_scrolls=2,
-                                   apply=True, serial=serial)
+                                   apply=True, serial=serial,
+                                   expect=posts[0].get("text") or "")
                 if r.get("open", {}).get("opened"):
                     opened += 1
                     if r.get("like", {}).get("applied"):
@@ -154,6 +155,9 @@ def feed_pass(seconds: float = 60.0, topic: str = "football",
     reader = rd.Reader(serial)
     xf.ensure_home(serial)
     xf.switch_timeline("For you", serial=serial)
+    # Go to the HEAD of the timeline. Landing where the last pass stopped means
+    # reading the old ranking, not the response to what was just done.
+    xf.scroll_to_top(serial)
 
     seen: dict = {}
     dwelt = skipped = opened = 0
@@ -169,7 +173,8 @@ def feed_pass(seconds: float = 60.0, topic: str = "football",
             # tells the ranker its guess landed.
             if apply and opened < max_opens:
                 r = xf.engage_post(0, like_it=True, reply_scrolls=1,
-                                   apply=True, serial=serial)
+                                   apply=True, serial=serial,
+                                   expect=posts[0].get("text") or "")
                 if r.get("open", {}).get("opened"):
                     opened += 1
             else:

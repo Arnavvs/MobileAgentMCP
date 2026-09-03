@@ -232,6 +232,30 @@ def timelines(serial: str = "", nodes: Optional[list] = None) -> dict:
             "no cell reported selected - dump may be mid-animation; re-dump"}
 
 
+def scroll_to_top(serial: str = "", settle: float = 2.0) -> dict:
+    """Jump to the head of the timeline, and take any "new posts" pill offered.
+
+    Without this a feed pass reads whatever was left on screen from the last
+    one - which is the OLD ranking, not the response to what you just did. The
+    account owner's correction, 2026-09-03: go to the top first, or you are not
+    looking at the updated feed at all.
+    """
+    nodes = _nodes(_raw_xml(serial))
+    pill = next((n for n in nodes
+                 if n["label"] and n["label"].strip().lower().startswith("show")
+                 and "post" in n["label"].lower()), None)
+    top = next((n for n in nodes
+                if n["label"].strip().lower() == "scroll to top"), None)
+    used = None
+    if pill:                       # the blue pill both refreshes AND scrolls
+        _tap(*pill["center"], serial=serial, settle=settle)
+        used = pill["label"]
+    elif top:
+        _tap(*top["center"], serial=serial, settle=settle)
+        used = "Scroll to top"
+    return {"at_top": bool(used), "used": used}
+
+
 def ensure_home(serial: str = "", settle: float = 2.5) -> dict:
     """Get to the top of Home, where the tab strip exists.
 
@@ -539,13 +563,15 @@ def snapshot(max_tweets: int = 40, max_swipes: int = 20, settle_s: float = 1.3,
     # X collapses the tab strip once the feed is scrolled, so a snapshot taken
     # where the last one left off cannot see which timeline it is sampling.
     # Return to the top first: it also makes successive samples comparable.
+    # ALWAYS start from the head of the timeline, not merely when the tab strip
+    # is missing. Sampling from wherever the screen happened to be reads the
+    # ranking as it was when that content loaded - so a snapshot taken right
+    # after a campaign can report the OLD feed and hide the change it is meant
+    # to measure. Found 2026-09-03, after an "after" snapshot disagreed with
+    # what was actually at the top of the feed.
+    scroll_to_top(serial)
     t = timelines(serial)
     if t["active"] is None:
-        top = next((n for n in _nodes(_raw_xml(serial))
-                    if n["clickable"] and n["label"].lower() == "scroll to top"),
-                   None)
-        if top:
-            _tap(*top["center"], serial=serial, settle=1.5)
         t = timelines(serial)
     merged: dict[str, dict] = {}
     order: list[str] = []
@@ -1017,13 +1043,22 @@ def in_post_detail(serial: str = "", nodes: Optional[list] = None) -> bool:
     return any(m in l for l in labs for m in _DETAIL_MARKS)
 
 
-def open_post(nth: int = 0, serial: str = "", settle: float = 2.5) -> dict:
-    """Open the nth visible post by tapping its body.
+def open_post(nth: int = 0, serial: str = "", settle: float = 2.5,
+              expect: str = "") -> dict:
+    """Open a visible post by tapping its body.
 
     Targets the widest text node in the content band rather than a control:
     tapping metrics toggles them, tapping media plays it, and only the body
     opens the post. Verifies afterwards, because a tap that silently did
     nothing would otherwise be scored as a successful open.
+
+    `expect` is the text of the post the CALLER decided to open, and it matters
+    more than it looks. A caller reads the screen, classifies `posts[0]`, then
+    calls this - which re-dumps and picks the topmost body. Those two scans can
+    disagree, and on 2026-09-03 they did: a campaign targeting Bollywood
+    classified a Bollywood post and opened a football one, because nothing tied
+    the decision to the tap. Pass `expect` and this refuses rather than opening
+    something the caller never judged.
     """
     from ..tools.apps.twitter import assemble_tweets
 
@@ -1046,10 +1081,22 @@ def open_post(nth: int = 0, serial: str = "", settle: float = 2.5) -> dict:
               and n["label"].strip().lower() not in _NOT_BODY_LABELS
               and n["label"][:40] not in ad_text]
     bodies.sort(key=lambda n: n["bounds"][1])
-    if nth >= len(bodies):
-        return {"error": "no non-ad post body in the content band",
-                "visible": len(bodies), "ads_skipped": len(ad_text)}
-    target = bodies[nth]
+
+    if expect:
+        key = " ".join(expect.split())[:40]
+        match = next((b for b in bodies
+                      if " ".join(b["label"].split())[:40] == key), None)
+        if match is None:
+            return {"error": "the post the caller judged is no longer on screen",
+                    "expected": key,
+                    "visible": [b["label"][:40] for b in bodies][:5],
+                    "note": "refusing to open a different post"}
+        target = match
+    else:
+        if nth >= len(bodies):
+            return {"error": "no non-ad post body in the content band",
+                    "visible": len(bodies), "ads_skipped": len(ad_text)}
+        target = bodies[nth]
     _tap(*target["center"], serial=serial, settle=settle)
 
     # A tap can leave X entirely - an ad we failed to spot, or a link in the
@@ -1100,7 +1147,7 @@ def read_replies(scrolls: int = 2, serial: str = "",
 
 
 def engage_post(nth: int = 0, like_it: bool = True, reply_scrolls: int = 2,
-                apply: bool = False, serial: str = "") -> dict:
+                apply: bool = False, serial: str = "", expect: str = "") -> dict:
     """Open a post, read its replies, optionally like it, and come back.
 
     The full interaction a reader performs, in one call. Liking happens INSIDE
@@ -1116,7 +1163,7 @@ def engage_post(nth: int = 0, like_it: bool = True, reply_scrolls: int = 2,
                                  else "no_like", "back"]}
         return out
 
-    opened = open_post(nth, serial=serial)
+    opened = open_post(nth, serial=serial, expect=expect)
     out["open"] = opened
     if not opened.get("opened"):
         return out
