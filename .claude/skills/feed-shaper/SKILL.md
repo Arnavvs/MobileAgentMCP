@@ -33,8 +33,17 @@ Measured 2026-09-03 on a live account: For-you went 0% -> 22% football and
 run reproduced it. The route is the account owner's own, not a control-panel
 theory:
 
-1. **Unfollow** accounts of the unwanted topic (`following_list` then
-   `unfollow`). Small graphs are quick - 25 follows enumerated in ~30 s.
+1. **Unfollow the unwanted topic's accounts. This is the strongest lever, and
+   it is not optional.** Follows are the IN-NETWORK candidate source (Thunder
+   serves posts from accounts you follow, directly, unranked) - so no amount of
+   out-of-network dwelling outweighs a follow graph full of the old topic.
+   Measured 2026-09-03: two Bollywood campaigns barely moved a football-heavy
+   feed (bollywood 0% -> 17%), and then unfollowing 11 football accounts in
+   61 s moved it to **bollywood 36%, football 9%** on its own.
+   `following_list` then `unfollow`; 34 follows enumerate in ~30 s.
+   Note this cuts BOTH ways: every account a campaign follows becomes tomorrow's
+   in-network noise. Unfollow what the last campaign added before steering
+   somewhere new.
 2. **Pick 3-4 CURRENT keywords.** Web-search first; a stale keyword returns a
    stale timeline and teaches the ranker nothing. Real storylines beat generic
    terms ("Alvarez Atletico Madrid" over "football").
@@ -98,6 +107,14 @@ before acting on a classification.
   covers both a scrolled feed and X not being open. Resolve the foreground
   first. Never use BACK as blind recovery; it walks out of the app.
 - **Reset a scrolled list by reopening it**, not by scrolling further.
+- **Go to the top before reading the feed.** `scroll_to_top` prefers the blue
+  new-posts pill, which refreshes as well as scrolls. Resuming where the last
+  pass stopped reads the OLD ranking - and a snapshot that does it reports the
+  stale feed, hiding the change it exists to measure.
+- **Tie the tap to the judgement.** Classify a post and open THAT post: pass
+  `expect=<its text>` to `engage_post`. Two independent scans of the same
+  screen can disagree, and a campaign targeting Bollywood opened a football
+  post because nothing connected the decision to the tap.
 
 ## Cost accounting
 
