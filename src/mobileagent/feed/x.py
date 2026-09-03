@@ -109,8 +109,13 @@ def _nodes(xml: str) -> list[dict]:
             continue
         b = tuple(int(g) for g in m.groups())
         label = (a.get("text") or "").strip() or (a.get("content-desc") or "").strip()
+        rid = a.get("resource-id") or ""
         out.append({
             "label": label,
+            # X hangs almost nothing on resource-ids, but Instagram names its
+            # controls properly - and some of them (the reel More button) have
+            # touch targets too unreliable to hit by label. Carry the id.
+            "rid": rid.split("/")[-1] if rid else "",
             "bounds": b,
             "center": ((b[0] + b[2]) // 2, (b[1] + b[3]) // 2),
             "clickable": a.get("clickable") == "true",
