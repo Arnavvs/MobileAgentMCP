@@ -1,2 +1,3 @@
 mcp[cli]>=2.1.1
 uiautomator2>=3.7.0
+yt-dlp>=2026.8.19
